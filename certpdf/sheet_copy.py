@@ -20,25 +20,9 @@ from openpyxl.worksheet.dimensions import ColumnDimension
 
 A4 = 9  # used when a tab doesn't say which paper it is for
 
-MAX_TAB_NAME = 31
-_INVALID_TAB_CHARS = re.compile(r"[\[\]:*?/\\]")
 _PAGE_SETUP_ATTRS = ("orientation", "paperSize", "scale", "fitToWidth", "fitToHeight", "firstPageNumber",
                      "useFirstPageNumber", "pageOrder", "blackAndWhite", "draft", "cellComments", "errors")
 _VIEW_ATTRS = ("showGridLines", "zoomScale", "zoomScaleNormal", "zoomScalePageLayoutView", "view")
-
-
-def tab_title(stem: str, label: str, used: set[str]) -> str:
-    """A valid, unique tab name such as 'F23-AGH019-0626 ECG cert' (at most 31 characters)."""
-    stem = _INVALID_TAB_CHARS.sub("-", stem).strip("' ")
-    room = MAX_TAB_NAME - len(label) - 1
-    base = f"{stem[:room].rstrip()} {label}" if stem else label
-    title, number = base, 2
-    while title.lower() in used:
-        suffix = f" ({number})"
-        title = base[:MAX_TAB_NAME - len(suffix)].rstrip() + suffix
-        number += 1
-    used.add(title.lower())
-    return title
 
 
 def _copy_style(source, target) -> None:
@@ -57,10 +41,13 @@ def adopt_default_font(target_book, source_book) -> None:
     different one (a new workbook has Calibri 11, the templates Arial 10) every
     column changes width and pages break differently. Call before adding cells.
     """
+    use_default_font(target_book, source_book._fonts[0])
+
+
+def use_default_font(target_book, font) -> None:
     if len(target_book._fonts) != 1:
         return  # cells already use other fonts; changing the list would re-point them
-    font = copy(source_book._fonts[0])
-    target_book._fonts = IndexedList([font])
+    target_book._fonts = IndexedList([copy(font)])
     target_book._named_styles["Normal"].font = copy(font)
 
 

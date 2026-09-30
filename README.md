@@ -30,10 +30,15 @@ You pick the Excel workbooks (one per device). For every workbook, the app colle
 | **Certificates** (.xlsx and .pdf) | `ECG.certificate`, then `NIBP.certificate` |
 | **Pass-Fail Test Sheets** (.xlsx and .pdf) | `ECG.pass-fail`, then `NIBP.pass-fail` |
 
-* **Excel files:** one tab per sheet (for example `F23-AGH019-0626 ECG cert`, `F23-AGH019-0626 NIBP cert`, …).
-  Each tab keeps its layout and page setup and holds the values from the original, so it no longer
-  depends on the other tabs. To get everything on paper or in one PDF yourself, open the file in any Excel
-  version and choose **Print → Print entire workbook**. Making the Excel files doesn't need Excel at all.
+* **Excel files:** each file has **one single sheet**. On it, every device's ECG tab is followed by its
+  NIBP tab, one after another, with a page break between them. Each keeps its layout (column widths,
+  borders, merged cells, row heights) and the values from the original, so it no longer depends on the other
+  tabs. To get everything on paper or in one PDF yourself, open the file in any Excel version and print it.
+  Choosing *Microsoft Print to PDF* gives one PDF. Making the Excel files doesn't need Excel at all.
+  * A sheet has one print scale, so tabs that printed larger than the others (for example 97 % vs 82 %) are
+    enlarged to match and come out the same size.
+  * A sheet has one page footer. When the tabs' footers differ (for example the ECG pass/fail
+    "Code No MECL-TR-05 …"), each footer is printed as a line under the content of its own pages.
 * **PDF files:** the same pages as printing each tab, with a bookmark for every device.
 
 **The app never prints anything.** It only reads your Excel files and never changes them.
@@ -78,7 +83,7 @@ Files with a missing tab are still processed: the tabs that exist are included, 
 
 | Problem | What to do |
 | --- | --- |
-| *"PDF files were not made"* | Your Excel can't save PDFs (e.g. Excel 2007). Install LibreOffice (free), or use the Excel files: open one and choose *Print → Print entire workbook*. |
+| *"PDF files were not made"* | Your Excel can't save PDFs (e.g. Excel 2007). Install LibreOffice (free), or use the Excel files: open one and print it (*Microsoft Print to PDF* gives a PDF). |
 | A tab shows ✖ | Select the file: the line under the table lists the tabs it has. Fix the name under **Options…**. |
 | *"Could not save … is it open?"* | Close the file in Excel / the PDF viewer and click **Create files** again. |
 | Page layout is wrong (cut off, several pages) | Fix the tab's *Page Layout* (print area, *Fit to 1 page*) in the original Excel file; the app keeps that setup. |
@@ -110,7 +115,8 @@ It holds the .exe and *How to use.txt*. Put both in a `CertificatePDFBuilder` fo
 | Path | What it is |
 | --- | --- |
 | `certpdf/gui.py` | The window (tkinter) |
-| `certpdf/excel_output.py` | Copies the tabs of every workbook into the two Excel files |
+| `certpdf/excel_output.py` | Puts the tabs of every workbook into the two Excel files |
+| `certpdf/stacked_sheet.py` | Lays many tabs out one after another on a single sheet, keeping each one's widths |
 | `certpdf/sheet_copy.py` | Copies one tab (values, formatting, page setup) into another workbook |
 | `certpdf/builder.py` | Turns the tabs of every workbook into PDF and merges them into the two PDFs |
 | `certpdf/engines.py` | Saving a tab as PDF with Microsoft Excel (COM, never printing) or LibreOffice (headless) |

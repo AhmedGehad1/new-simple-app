@@ -11,8 +11,9 @@ Certificate PDF Builder
 3. Choose where to save, tick Excel files and/or PDF files, then click "Create files".
      Certificates             - ECG.certificate + NIBP.certificate of every device
      Pass-Fail Test Sheets    - ECG.pass-fail + NIBP.pass-fail of every device
-   The Excel files have one tab per sheet, in order. To print them all, or to make
-   one PDF yourself: File > Print > Print entire workbook.
+   Each Excel file has ONE sheet with everything one after another (a page break
+   between each). Print that sheet to get every page in order; choose
+   "Microsoft Print to PDF" as the printer to make one PDF yourself.
 
 PDF files need Excel 2010 or newer, or the free LibreOffice (https://www.libreoffice.org).
 Excel 2007 cannot save PDFs - install LibreOffice and the app will use it automatically.

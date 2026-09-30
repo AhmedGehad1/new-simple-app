@@ -466,8 +466,9 @@ class App(tk.Tk):
         kinds.grid(row=3, column=1, sticky="ew", padx=(px(12), 0), pady=(px(8), 0))
         excel = ttk.Checkbutton(kinds, text="Excel files", variable=self.make_excel_var, takefocus=False)
         excel.pack(side="left")
-        Tooltip(excel, "One Excel file per group, one tab per sheet, in list order.\n"
-                       "Works on any PC and never prints anything.", self.font_small)
+        Tooltip(excel, "One Excel file per group with a single sheet: all devices one after\n"
+                       "another, with a page break between them. Printing it gives every page in order.\n"
+                       "Works on any PC; the app itself never prints anything.", self.font_small)
         pdf = ttk.Checkbutton(kinds, text="PDF files", variable=self.make_pdf_var, takefocus=False,
                               command=self._update_engine_note)
         pdf.pack(side="left", padx=(px(14), 0))
@@ -1030,7 +1031,8 @@ class App(tk.Tk):
             self._update_row(index)
 
         saved = [out for r in results for out in r.outputs.values() if out]
-        lines = [f"• {out.path.name} – {out.tabs} tabs" + (f", {out.pages} pages" if out.pages else "")
+        lines = [f"• {out.path.name} – {out.tabs} tabs, {out.pages} pages" if out.pages
+                 else f"• {out.path.name} – {out.tabs} tabs one after another on a single sheet"
                  for out in saved]
         notes = []
         if run.pdf_error:
