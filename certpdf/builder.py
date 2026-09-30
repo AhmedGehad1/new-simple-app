@@ -96,7 +96,8 @@ def build_pdfs(
             result = _print_workbook(engine, path, wanted, tmp_dir / f"{index:04d}", reporter)
             results.append(result)
             if result.problems:
-                reporter.file_status(index, "error", "; ".join(result.problems))
+                reporter.file_status(index, "error", "Partly done – see the messages below" if result.pdfs
+                                     else "Failed – see the messages below")
             elif result.missing:
                 reporter.file_status(index, "warning", f"Done – {len(result.missing)} tab(s) missing")
             else:

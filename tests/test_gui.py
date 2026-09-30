@@ -50,3 +50,49 @@ def test_move_and_remove(app, workbook_factory):
     assert [r[1] for r in rows(app)] == ["d0.xlsx", "d2.xlsx", "d1.xlsx"]
     app._remove_selected()
     assert [r[1] for r in rows(app)] == ["d0.xlsx", "d1.xlsx"]
+
+
+def test_conversion_failure_is_explained(app, workbook_factory, tmp_path, monkeypatch):
+    import time
+    from contextlib import contextmanager
+
+    import certpdf.gui as gui
+    from certpdf.workbook_info import read_sheet_names
+
+    class FailingEngine:
+        name = "Microsoft Excel"
+
+        @contextmanager
+        def open(self, path):
+            class Workbook:
+                sheet_names = read_sheet_names(path)
+
+                def export_many(self, jobs):
+                    return {sheet: "Excel could not convert it. export: Exception occurred. (code 0x800A03EC)"
+                            for sheet, _ in jobs}
+            yield Workbook()
+
+    @contextmanager
+    def fake_open_engine(choice, log):
+        yield FailingEngine()
+
+    dialogs = []
+    monkeypatch.setattr(gui, "open_engine", fake_open_engine)
+    monkeypatch.setattr(gui, "available_engines", lambda: {"excel": True, "libreoffice": False})
+    monkeypatch.setattr(gui.messagebox, "askyesno", lambda *a, **k: True)
+    monkeypatch.setattr(gui.messagebox, "showerror", lambda title, message, **k: dialogs.append((title, message)))
+
+    app.add_paths([workbook_factory("dev.xlsx")])
+    app.output_var.set(str(tmp_path / "out"))
+    app._start()
+    deadline = time.monotonic() + 20
+    while app.worker is not None and time.monotonic() < deadline:
+        app.update()
+        time.sleep(0.02)
+
+    assert app.worker is None
+    assert "could not be converted" in app.status_label.cget("text")
+    assert dialogs and dialogs[0][0] == "The tabs could not be converted"
+    assert "0x800A03EC" in dialogs[0][1]
+    assert rows(app)[0][-1] == "Failed – see the messages below"
+    assert app.engine_button.cget("text") == "Automatic (recommended)"

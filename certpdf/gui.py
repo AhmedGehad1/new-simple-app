@@ -249,11 +249,13 @@ class App(tk.Tk):
                         lightcolor=BORDER, darkcolor=BORDER)
         style.map("TEntry", bordercolor=[("focus", PRIMARY)], lightcolor=[("focus", PRIMARY)],
                   fieldbackground=[("disabled", BUTTON)])
-        style.configure("TCombobox", padding=px(4), fieldbackground="white", background=BUTTON,
-                        bordercolor=BORDER, lightcolor=BORDER, darkcolor=BORDER, arrowcolor=TEXT)
-        style.map("TCombobox", fieldbackground=[("readonly", "white"), ("disabled", BUTTON)],
-                  bordercolor=[("focus", PRIMARY)], selectbackground=[("readonly", "white")],
-                  selectforeground=[("readonly", TEXT)])
+        style.configure("Select.TMenubutton", padding=(px(8), px(5)), background="white", foreground=TEXT,
+                        bordercolor=BORDER, lightcolor="white", darkcolor="white", arrowcolor=TEXT,
+                        relief="raised")
+        style.map("Select.TMenubutton", background=[("disabled", BUTTON), ("active", "#F3F6FA")],
+                  lightcolor=[("disabled", BUTTON), ("active", "#F3F6FA")],
+                  darkcolor=[("disabled", BUTTON), ("active", "#F3F6FA")],
+                  bordercolor=[("active", PRIMARY)], foreground=[("disabled", "#A3ADB9")])
 
         style.configure("Files.Treeview", rowheight=px(28), background="white", fieldbackground="white",
                         foreground=TEXT, bordercolor=BORDER, lightcolor=BORDER, darkcolor=BORDER)
@@ -430,13 +432,14 @@ class App(tk.Tk):
                                                                           pady=(px(8), 0))
         engine_row = ttk.Frame(body, style="Card.TFrame")
         engine_row.grid(row=3, column=1, sticky="ew", padx=(px(12), 0), pady=(px(8), 0))
-        self.engine_var = tk.StringVar(value=dict(ENGINE_CHOICES)[self.settings.engine])
-        engine = ttk.Combobox(engine_row, textvariable=self.engine_var, state="readonly", width=23,
-                              values=[label for _, label in ENGINE_CHOICES], takefocus=False)
-        engine.pack(side="left")
-        engine.bind("<<ComboboxSelected>>", lambda _e: (engine.selection_clear(), self._update_engine_note()))
-        self.engine_combo = engine
-        self._lockable.append(engine)
+        self.engine_var = tk.StringVar(value=self.settings.engine)
+        self.engine_button = ttk.Menubutton(engine_row, style="Select.TMenubutton", width=24, takefocus=False)
+        menu = tk.Menu(self.engine_button, tearoff=False)
+        for key, label in ENGINE_CHOICES:
+            menu.add_radiobutton(label=label, value=key, variable=self.engine_var, command=self._update_engine_note)
+        self.engine_button.configure(menu=menu, text=dict(ENGINE_CHOICES)[self._engine_choice()])
+        self.engine_button.pack(side="left")
+        self._lockable.append(self.engine_button)
         self.engine_note = tk.Label(engine_row, bg=CARD, fg=MUTED, font=self.font_small, anchor="w")
         self.engine_note.pack(side="left", padx=(px(8), 0))
 
@@ -742,12 +745,13 @@ class App(tk.Tk):
             self.sheet_vars[key].set(name)
 
     def _engine_choice(self) -> str:
-        label = self.engine_var.get()
-        return next((key for key, text in ENGINE_CHOICES if text == label), ENGINE_AUTO)
+        choice = self.engine_var.get()
+        return choice if choice in dict(ENGINE_CHOICES) else ENGINE_AUTO
 
     def _update_engine_note(self) -> None:
         excel, libre = self.engines.get(ENGINE_EXCEL), self.engines.get(ENGINE_LIBREOFFICE)
         choice = self._engine_choice()
+        self.engine_button.configure(text=dict(ENGINE_CHOICES)[choice])
         if not excel and not libre:
             self.engine_note.configure(text="Excel / LibreOffice not found – click for help", fg=ERROR,
                                        cursor="hand2")
@@ -884,8 +888,6 @@ class App(tk.Tk):
     def _set_running(self, running: bool) -> None:
         for widget in self._lockable:
             widget.state(["disabled"] if running else ["!disabled"])
-        if not running:
-            self.engine_combo.state(["readonly"])
         self.cancel_button.state(["!disabled"] if running else ["disabled"])
         self.config(cursor="watch" if running else "")
 
@@ -944,8 +946,9 @@ class App(tk.Tk):
         lines = []
         for group, title in ((CERTIFICATES, "Certificates"), (PASS_FAIL, "Pass/Fail")):
             out = result.outputs.get(group)
+            reason = "the tabs could not be converted" if failed else "no matching tabs found"
             lines.append(f"• {out.path.name} – {out.tabs} tabs, {out.pages} pages" if out
-                         else f"• {title} PDF – not created (no matching tabs found)")
+                         else f"• {title} PDF – not created ({reason})")
         if missing:
             lines.append(f"\n{missing} tab(s) were missing and left out.")
         if failed:
@@ -967,6 +970,18 @@ class App(tk.Tk):
             show("PDFs created", "The PDFs were saved:\n\n" + "\n".join(lines), parent=self)
             if self.open_folder_var.get():
                 self._open_output_folder()
+        elif failed:
+            self.status_label.configure(text="Nothing was saved – the tabs could not be converted. "
+                                             "See the messages below.", foreground=ERROR)
+            first = failed[0].problems[0]
+            messagebox.showerror(
+                "The tabs could not be converted",
+                f"The tabs were found, but {result.engine_name} could not turn them into PDF.\n\n"
+                f"First error ({failed[0].path.name}):\n{first[:400]}\n\n"
+                "Things to try:\n"
+                "• Open one of the files in Excel and use File → Export → Create PDF. If that fails too, "
+                "Excel itself cannot make PDFs on this PC (check that Office is activated and a printer is set up).\n"
+                "• Or choose “Convert with: LibreOffice” (free to install).", parent=self)
         else:
             self.status_label.configure(text="Nothing was saved – no matching tabs were found.", foreground=ERROR)
             messagebox.showerror(APP_NAME, "No PDF was created.\n\n" + "\n".join(lines)

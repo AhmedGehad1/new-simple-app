@@ -12,6 +12,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import time
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Callable, Iterator
@@ -34,19 +35,66 @@ XL_TYPE_PDF = 0
 XL_QUALITY_STANDARD = 0
 XL_SHEET_VISIBLE = -1
 MSO_AUTOMATION_SECURITY_FORCE_DISABLE = 3
+PDF_PRINTER = "Microsoft Print to PDF"
 
 
 def _com_message(exc: Exception) -> str:
-    """Readable text from a pywintypes.com_error."""
+    """Readable text from a pywintypes.com_error, including Excel's error code."""
+    args = getattr(exc, "args", ())
+    text, code = "", None
     try:
-        excepinfo = exc.args[2]
-        if excepinfo and excepinfo[2]:
-            return str(excepinfo[2]).strip()
-        if exc.args[1]:
-            return str(exc.args[1]).strip()
+        excepinfo = args[2] if len(args) > 2 else None
+        if excepinfo:
+            text = str(excepinfo[2] or "").strip()
+            code = excepinfo[5] if len(excepinfo) > 5 else None
+        if not text and len(args) > 1 and args[1]:
+            text = str(args[1]).strip()
+        if not code and args and isinstance(args[0], int):
+            code = args[0]
     except (IndexError, TypeError):
         pass
-    return str(exc)
+    text = text or str(exc) or type(exc).__name__
+    if isinstance(code, int) and code:
+        text += f" (code 0x{code & 0xFFFFFFFF:08X})"
+    return text
+
+
+def _copy_file_contents(src: Path, dst: Path) -> None:
+    """Copy only the file's data, so Windows' "downloaded from the internet" mark
+    (which makes Excel open files in Protected View) is not copied along."""
+    with open(src, "rb") as reader, open(dst, "wb") as writer:
+        shutil.copyfileobj(reader, writer, 1024 * 1024)
+
+
+def _pdf_printer_names() -> list[str]:
+    """Names Excel may accept for Windows' built-in PDF printer."""
+    names = [PDF_PRINTER]
+    try:
+        import winreg
+        with winreg.OpenKey(winreg.HKEY_CURRENT_USER,
+                            r"Software\Microsoft\Windows NT\CurrentVersion\Devices") as key:
+            port = str(winreg.QueryValueEx(key, PDF_PRINTER)[0]).split(",")[-1]
+        names.append(f"{PDF_PRINTER} on {port}")
+    except (ImportError, OSError, IndexError):
+        pass
+    return names
+
+
+def _has_content(path: Path) -> bool:
+    return path.exists() and path.stat().st_size > 0
+
+
+def _wait_for_pdf(path: Path, timeout: float) -> bool:
+    """Printing finishes in the background; wait until the PDF is fully written."""
+    deadline = time.monotonic() + timeout
+    last_size = -1
+    while time.monotonic() < deadline:
+        size = path.stat().st_size if path.exists() else -1
+        if size > 0 and size == last_size:
+            return True
+        last_size = size
+        time.sleep(0.5)
+    return _has_content(path)
 
 
 class ExcelEngine:
@@ -55,6 +103,16 @@ class ExcelEngine:
     def __init__(self) -> None:
         self._app = None
         self._com_ready = False
+        self._tmp: Path | None = None
+        self.log: Callable[[str, str], None] = lambda level, text: None
+        # Ways to turn a tab into a PDF, best first. The first one that works
+        # on this PC is moved to the front and used from then on.
+        self.methods = [
+            ("export", self._export),
+            ("export from a copy of the tab", self._export_copy),
+            (f"print to “{PDF_PRINTER}”", self._print_to_pdf_printer),
+            ("export ignoring the print area", self._export_ignoring_print_area),
+        ]
 
     @staticmethod
     def is_available() -> bool:
@@ -98,6 +156,7 @@ class ExcelEngine:
             except Exception:
                 pass
         self._app = app
+        self._tmp = Path(tempfile.mkdtemp(prefix="certpdf-xl-"))
 
     def stop(self) -> None:
         if self._app is not None:
@@ -110,34 +169,108 @@ class ExcelEngine:
             import pythoncom
             pythoncom.CoUninitialize()
             self._com_ready = False
+        if self._tmp is not None:
+            shutil.rmtree(self._tmp, ignore_errors=True)
+            self._tmp = None
 
     @contextmanager
     def open(self, path: Path) -> Iterator["_ExcelWorkbook"]:
+        # Excel works on a local copy: files on network shares, files marked as
+        # downloaded, and files someone else has open all cause export errors.
+        work = Path(tempfile.mkdtemp(dir=self._tmp))
+        local = work / f"workbook{Path(path).suffix.lower()}"
         try:
-            workbook = self._app.Workbooks.Open(
-                str(Path(path).resolve()),
-                UpdateLinks=0,
-                ReadOnly=True,
-                IgnoreReadOnlyRecommended=True,
-                # A dummy password makes Excel fail on protected files instead of
-                # waiting for someone to type the password into a hidden window.
-                Password="-",
-                Notify=False,
-                AddToMru=False,
-            )
-        except Exception as exc:
-            raise EngineError(f"Excel could not open the file ({_com_message(exc)})") from None
+            try:
+                _copy_file_contents(Path(path), local)
+            except OSError as exc:
+                raise EngineError(f"the file could not be read ({exc.strerror or exc})") from None
+            try:
+                workbook = self._app.Workbooks.Open(
+                    str(local),
+                    UpdateLinks=0,
+                    ReadOnly=False,
+                    IgnoreReadOnlyRecommended=True,
+                    # A dummy password makes Excel fail on protected files instead of
+                    # waiting for someone to type the password into a hidden window.
+                    Password="-",
+                    Notify=False,
+                    AddToMru=False,
+                )
+            except Exception as exc:
+                raise EngineError(f"Excel could not open the file ({_com_message(exc)})") from None
+            try:
+                yield _ExcelWorkbook(self, workbook)
+            finally:
+                try:
+                    workbook.Close(SaveChanges=False)
+                except Exception:
+                    pass
+        finally:
+            shutil.rmtree(work, ignore_errors=True)
+
+    def convert(self, sheet, pdf_path: Path) -> None:
+        """Turn one tab into a PDF, trying each method until one works."""
+        failures = []
+        for position, (label, method) in enumerate(self.methods):
+            _remove_quietly(pdf_path)
+            try:
+                method(sheet, pdf_path)
+                printed = method == self._print_to_pdf_printer
+                if not (_wait_for_pdf(pdf_path, timeout=60) if printed else _has_content(pdf_path)):
+                    raise EngineError("no PDF was created")
+            except Exception as exc:
+                message = str(exc) if isinstance(exc, EngineError) else _com_message(exc)
+                failures.append(f"{label}: {message}")
+                continue
+            if position:
+                self.methods.insert(0, self.methods.pop(position))
+                self.log("warning" if "ignoring" in label else "info",
+                         f"Excel's normal PDF export did not work on this PC; using “{label}” instead.")
+            return
+        raise EngineError("Excel could not convert it. " + " | ".join(failures))
+
+    # Methods, best first -------------------------------------------------
+
+    @staticmethod
+    def _export(sheet, pdf_path: Path) -> None:
+        # Same as printing the tab: uses its print area, orientation, scaling, headers...
+        sheet.ExportAsFixedFormat(XL_TYPE_PDF, str(pdf_path), XL_QUALITY_STANDARD, True, False)
+
+    def _export_copy(self, sheet, pdf_path: Path) -> None:
+        # Copying a tab on its own into a new workbook keeps its page setup.
+        count = self._app.Workbooks.Count
+        sheet.Copy()
+        if self._app.Workbooks.Count <= count:
+            raise EngineError("the tab could not be copied")
+        book = self._app.Workbooks(self._app.Workbooks.Count)
         try:
-            yield _ExcelWorkbook(workbook)
+            book.ExportAsFixedFormat(XL_TYPE_PDF, str(pdf_path), XL_QUALITY_STANDARD, True, False)
         finally:
             try:
-                workbook.Close(SaveChanges=False)
+                book.Close(SaveChanges=False)
             except Exception:
                 pass
 
+    @staticmethod
+    def _print_to_pdf_printer(sheet, pdf_path: Path) -> None:
+        errors = []
+        for printer in _pdf_printer_names():
+            try:
+                sheet.PrintOut(ActivePrinter=printer, PrintToFile=True, PrToFileName=str(pdf_path))
+                return
+            except Exception as exc:
+                errors.append(_com_message(exc))
+        raise EngineError(f"the “{PDF_PRINTER}” printer is not available ({errors[-1]})")
+
+    @staticmethod
+    def _export_ignoring_print_area(sheet, pdf_path: Path) -> None:
+        # Last resort for tabs whose print area is broken: prints the used range.
+        sheet.ExportAsFixedFormat(XL_TYPE_PDF, str(pdf_path), XL_QUALITY_STANDARD, True, True)
+
 
 class _ExcelWorkbook:
-    def __init__(self, workbook) -> None:
+    def __init__(self, engine: ExcelEngine, workbook) -> None:
+        self._engine = engine
         self._workbook = workbook
         self.sheet_names = [sheet.Name for sheet in workbook.Worksheets]
 
@@ -145,24 +278,25 @@ class _ExcelWorkbook:
         errors = {}
         for sheet_name, pdf_path in jobs:
             try:
-                self._export(sheet_name, Path(pdf_path))
+                sheet = self._workbook.Worksheets(sheet_name)
+                if sheet.Visible != XL_SHEET_VISIBLE:
+                    try:
+                        sheet.Visible = XL_SHEET_VISIBLE  # hidden tabs cannot be printed
+                    except Exception:
+                        pass
+                self._engine.convert(sheet, Path(pdf_path))
             except EngineError as exc:
                 errors[sheet_name] = str(exc)
             except Exception as exc:
                 errors[sheet_name] = _com_message(exc)
         return errors
 
-    def _export(self, sheet_name: str, pdf_path: Path) -> None:
-        sheet = self._workbook.Worksheets(sheet_name)
-        if sheet.Visible != XL_SHEET_VISIBLE:
-            try:
-                sheet.Visible = XL_SHEET_VISIBLE  # hidden tabs cannot be printed
-            except Exception:
-                pass
-        # Same as printing the tab: uses its print area, orientation, scaling, headers...
-        sheet.ExportAsFixedFormat(XL_TYPE_PDF, str(pdf_path), XL_QUALITY_STANDARD, True, False)
-        if not pdf_path.exists():
-            raise EngineError("Excel did not create the PDF (is the tab empty?)")
+
+def _remove_quietly(path: Path) -> None:
+    try:
+        os.remove(path)
+    except OSError:
+        pass
 
 
 # --------------------------------------------------------------------------
@@ -336,6 +470,7 @@ def open_engine(preference: str, log: Callable[[str, str], None] = lambda level,
     errors = []
     for key in keys:
         engine = ENGINE_CLASSES[key]()
+        engine.log = log
         try:
             engine.start()
         except EngineError as exc:
