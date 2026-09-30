@@ -103,28 +103,41 @@ def titles_in_order(ws):
     return [value for _, value in sorted(found)]
 
 
-def test_one_sheet_per_file_with_everything_in_order(template, tmp_path):
+def test_one_sheet_per_kind_with_every_device_in_order(template, tmp_path):
     files = [template("dev2.xlsx"), template("dev1.xlsx")]
     result, outputs, recorder = build(files, tmp_path)
 
     certs = load_workbook(outputs[CERTIFICATES])
-    assert certs.sheetnames == ["Certificates"]
-    assert titles_in_order(certs.active) == ["dev2 ECG.certificate", "dev2 NIBP.certificate",
-                                             "dev1 ECG.certificate", "dev1 NIBP.certificate"]
+    assert certs.sheetnames == ["ECG certificates", "NIBP certificates"]
+    assert titles_in_order(certs["ECG certificates"]) == ["dev2 ECG.certificate", "dev1 ECG.certificate"]
+    assert titles_in_order(certs["NIBP certificates"]) == ["dev2 NIBP.certificate", "dev1 NIBP.certificate"]
     passfail = load_workbook(outputs[PASS_FAIL])
-    assert passfail.sheetnames == ["Pass-Fail test sheets"]
-    assert titles_in_order(passfail.active) == ["dev2 ECG.pass-fail test sheet", "dev2 NIBP.pass-fail sheet",
-                                                "dev1 ECG.pass-fail test sheet", "dev1 NIBP.pass-fail sheet"]
+    assert passfail.sheetnames == ["ECG reports", "NIBP reports"]
+    assert titles_in_order(passfail["NIBP reports"]) == ["dev2 NIBP.pass-fail sheet", "dev1 NIBP.pass-fail sheet"]
     assert result.outputs[CERTIFICATES].tabs == 4
     assert recorder.statuses == {0: "done", 1: "done"}
 
 
-def test_page_break_after_every_tab(template, tmp_path):
+def test_page_break_after_every_device(template, tmp_path):
+    _, outputs, _ = build([template("dev1.xlsx"), template("dev2.xlsx"), template("dev3.xlsx")], tmp_path)
+    ws = load_workbook(outputs[CERTIFICATES])["ECG certificates"]
+    # three tabs of 39 rows: breaks after rows 39 and 78, none after the last one
+    assert [b.id for b in ws.row_breaks.brk] == [39, 78]
+    assert ws.print_area.endswith("$117")
+    reports = load_workbook(outputs[PASS_FAIL])["ECG reports"]
+    assert [b.id for b in reports.row_breaks.brk] == [20, 39, 59, 78, 98]  # the tabs' own breaks kept too
+
+
+def test_page_setup_is_exactly_the_tabs_own(template, tmp_path):
     _, outputs, _ = build([template("dev1.xlsx"), template("dev2.xlsx")], tmp_path)
-    ws = load_workbook(outputs[CERTIFICATES]).active
-    # four tabs of 39 rows: breaks after rows 39, 78 and 117, none after the last one
-    assert [b.id for b in ws.row_breaks.brk] == [39, 78, 117]
-    assert ws.print_area == "'Certificates'!$A$1:$" + get_column_letter(ws.max_column) + "$156"
+    source = load_workbook(tmp_path / "dev1.xlsx")
+    for name, tab in (("ECG reports", "ECG.pass-fail test sheet"), ("NIBP reports", "NIBP.pass-fail sheet")):
+        ws, original = load_workbook(outputs[PASS_FAIL])[name], source[tab]
+        assert ws.page_setup.scale == original.page_setup.scale
+        assert ws.page_setup.paperSize == original.page_setup.paperSize  # unset stays unset
+        assert ws.page_margins.left == pytest.approx(original.page_margins.left)
+        assert ws.oddFooter.center.text == original.oddFooter.center.text
+        assert not [c for row in ws.iter_rows() for c in row if c.value == FOOTER]
 
 
 def two_blocks(tmp_path):
@@ -192,20 +205,24 @@ def test_no_fill_conditional_format_does_not_become_black(template, tmp_path):
     assert any("<fill>" in d and "FFFF0000" in d for d in dxfs)
 
 
-def test_different_footers_become_a_line_on_their_own_pages(template, tmp_path):
-    _, outputs, recorder = build([template("dev.xlsx")], tmp_path)
-    ws = load_workbook(outputs[PASS_FAIL]).active
+def test_scales_within_two_percent_are_not_resized(tmp_path):
+    # Excel's fit-to-page gives 88 % for one device and 87 % for the next.
+    blocks = two_blocks(tmp_path)
+    blocks[0].scale, blocks[1].scale = 88, 87
+    ws = Workbook().active
+    write_blocks(ws, blocks)
+    assert ws.page_setup.scale == 87
+    assert [b.scaled for b in blocks] == [1.0, 1.0]
+
+
+def test_different_footers_become_a_line_on_their_own_pages(tmp_path):
+    wb = load_workbook(make_template(tmp_path / "dev.xlsx", "dev"))
+    blocks = [read_block(wb["ECG.pass-fail test sheet"], "ecg"), read_block(wb["NIBP.pass-fail sheet"], "nibp")]
+    ws = Workbook().active
+    notes = write_blocks(ws, blocks)
     assert not ws.oddFooter.center.text
-    lines = [c.row for row in ws.iter_rows() for c in row if c.value == FOOTER]
-    assert len(lines) == 2  # the ECG pass/fail tab prints on two pages (break after row 20)
-    assert any("footer" in text for _, text in recorder.logs)
-
-
-def test_identical_footers_stay_page_footers(template, tmp_path):
-    _, outputs, _ = build([template("dev.xlsx", nibp_footer=FOOTER)], tmp_path)
-    ws = load_workbook(outputs[PASS_FAIL]).active
-    assert ws.oddFooter.center.text == FOOTER
-    assert not [c for row in ws.iter_rows() for c in row if c.value == FOOTER]
+    assert len([c for row in ws.iter_rows() for c in row if c.value == FOOTER]) == 2  # ECG tab: two pages
+    assert any("footer" in note for note in notes)
 
 
 def test_default_font_is_kept_so_column_widths_match(template, tmp_path):
@@ -268,6 +285,6 @@ def test_values_not_formulas(tmp_path):
                    check=True, capture_output=True, timeout=180)
     _, outputs, _ = build([calc_dir / "raw.xlsx"], tmp_path)
 
-    values = [c.value for row in load_workbook(outputs[CERTIFICATES]).active.iter_rows() for c in row
+    values = [c.value for row in load_workbook(outputs[CERTIFICATES])["ECG certificates"].iter_rows() for c in row
               if c.value is not None]
     assert values == ["F23-AGH019-0626", 42]

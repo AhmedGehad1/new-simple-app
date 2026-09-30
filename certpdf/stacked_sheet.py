@@ -1,4 +1,4 @@
-"""Put many tabs one after another on a single sheet, each looking as it did.
+"""Put many copies of a tab (one per device) one after another on a single sheet.
 
 Every tab ("block") keeps its own column widths: the columns of all blocks
 are laid over each other and the sheet gets a finer grid with a column
@@ -24,7 +24,7 @@ from openpyxl.styles import Alignment, Font, Side
 from openpyxl.utils import get_column_letter, range_boundaries
 from openpyxl.worksheet.pagebreak import Break
 
-from .sheet_copy import _without_empty_fill
+from .sheet_copy import _PAGE_SETUP_ATTRS, _without_empty_fill
 
 DIGIT_PX = 7          # width of a digit in pixels for the templates' default font (Arial 10 / Calibri 11)
 POINTS_PER_PX = 0.75
@@ -57,7 +57,9 @@ class Block:
     margins: object
     orientation: str | None
     paper: int | None
+    page_setup: dict                         # the tab's other page setup settings
     footer: object
+    print_options: object
     show_grid: bool | None
     view: str | None
     scaled: float = 1.0                      # set when laying out: this block's scale / the common scale
@@ -95,6 +97,9 @@ def _effective_scale(ws, width_pt: float, height_pt: float) -> int:
     setup = ws.page_setup
     scale = int(setup.scale or 100)
     fit = ws.sheet_properties.pageSetUpPr
+    if fit is not None and fit.fitToPage and setup.scale and setup.scale < 100:
+        # With "Fit to page" Excel saves the scale it worked out, so that is what the tab prints at.
+        return int(setup.scale)
     if fit is not None and fit.fitToPage:
         paper_w, paper_h = PAPER_POINTS.get(setup.paperSize or A4, PAPER_POINTS[A4])
         if setup.orientation == "landscape":
@@ -168,8 +173,10 @@ def read_block(ws, label: str) -> Block:
         label=label, widths_px=widths, heights=heights, hidden_rows=hidden, styles=styles, cells=cells,
         merges=merges, formats=formats, breaks=breaks, origin=(first_row, first_col),
         scale=_effective_scale(ws, width_pt, height_pt), margins=copy(ws.page_margins),
-        orientation=ws.page_setup.orientation, paper=ws.page_setup.paperSize, footer=copy(ws.HeaderFooter),
-        show_grid=ws.sheet_view.showGridLines, view=ws.sheet_view.view)
+        orientation=ws.page_setup.orientation, paper=ws.page_setup.paperSize,
+        page_setup={attr: getattr(ws.page_setup, attr) for attr in _PAGE_SETUP_ATTRS},
+        footer=copy(ws.HeaderFooter),
+        print_options=copy(ws.print_options), show_grid=ws.sheet_view.showGridLines, view=ws.sheet_view.view)
 
 
 # --------------------------------------------------------------------------
@@ -255,15 +262,19 @@ def write_blocks(ws, blocks: list[Block]) -> list[str]:
     notes = []
     common = min(block.scale for block in blocks)
     for block in blocks:
-        block.scaled = block.scale / common
+        # Scales within 2 % of each other (Excel's fit-to-page gives 87 % for one device and 88 %
+        # for the next) are left alone: resizing would split columns for a difference nobody sees.
+        block.scaled = block.scale / common if block.scale / common > 1.02 else 1.0
 
-    # Shared column grid (pixels); narrower blocks are centred on the widest.
+    # Shared column grid (pixels). Narrower blocks are centred on the widest when the tab
+    # prints centred, otherwise they start at the left like the original.
+    centred = bool(blocks[0].print_options.horizontalCentered)
     scaled_widths = [[round(w * b.scaled) for w in b.widths_px] for b in blocks]
     total = max(sum(widths) for widths in scaled_widths)
     edges = {0, total}
     starts = []
     for widths in scaled_widths:
-        x = (total - sum(widths)) // 2
+        x = (total - sum(widths)) // 2 if centred else 0
         starts.append(x)
         edges.add(x)
         for w in widths:
@@ -385,10 +396,13 @@ def write_blocks(ws, blocks: list[Block]) -> list[str]:
 
     # Page setup for the whole sheet
     setup = ws.page_setup
-    setup.orientation = first.orientation or "portrait"
-    setup.paperSize = first.paper or A4
+    # Exactly the tab's own page setup (paper, orientation, ...), except that one scale replaces
+    # "fit to page": Excel ignores page breaks when fitting.
+    for attr, value in first.page_setup.items():
+        setattr(setup, attr, value)
     setup.scale = common
-    ws.print_options.horizontalCentered = True
+    setup.fitToWidth = setup.fitToHeight = None
+    ws.print_options = copy(first.print_options)
     ws.print_area = f"A1:{get_column_letter(len(grid) - 1)}{next_row - 1}"
     if shared_footer:
         ws.HeaderFooter = copy(first.footer)
@@ -397,7 +411,7 @@ def write_blocks(ws, blocks: list[Block]) -> list[str]:
                      "at the bottom of its own pages")
     ws.sheet_view.showGridLines = first.show_grid
     ws.sheet_view.view = first.view
-    if any(abs(b.scaled - 1) > 0.02 for b in blocks):
+    if any(b.scaled != 1 for b in blocks):
         notes.append(f"printed at {common}%; tabs that printed larger were enlarged to match")
     return notes
 

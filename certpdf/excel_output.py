@@ -1,8 +1,11 @@
-"""Combine the wanted tabs of every workbook into Excel files with ONE sheet each.
+"""Combine the wanted tabs of every workbook into two Excel files.
 
-Certificates.xlsx has a single sheet with every device's ECG certificate and
-NIBP certificate one after another (a page break between each); the
-pass/fail file likewise. Works on the files themselves (openpyxl): it needs
+Certificates.xlsx has two sheets, "ECG certificates" and "NIBP certificates",
+each holding that certificate of every device one after another with a page
+break between them; Pass-Fail Test Sheets.xlsx has "ECG reports" and "NIBP
+reports". A sheet only holds copies of one template, so it keeps that
+template's print scale, margins and footer and prints exactly like the
+original tabs. Works on the files themselves (openpyxl): it needs
 neither Excel nor LibreOffice, and never prints. Formulas are replaced by the
 values Excel last calculated, so the result doesn't depend on the originals.
 """
@@ -24,7 +27,8 @@ from .stacked_sheet import Block, read_block, write_blocks
 from .workbook_info import match_sheets
 
 ENGINE_NAME = "Excel files"
-SHEET_TITLES = {"certificates": "Certificates", "passfail": "Pass-Fail test sheets"}
+SHEET_TITLES = {"ecg_cert": "ECG certificates", "nibp_cert": "NIBP certificates",
+                "ecg_pf": "ECG reports", "nibp_pf": "NIBP reports"}
 TAB_LABELS = {
     "ecg_cert": "ECG cert",
     "nibp_cert": "NIBP cert",
@@ -76,7 +80,7 @@ def build_workbooks(
     """
     cancel = cancel or threading.Event()
     wanted = {spec.key: sheet_names.get(spec.key) or spec.default_name for spec in SHEET_SPECS}
-    blocks: dict[str, list[Block]] = {group: [] for group in outputs}
+    blocks: dict[str, list[Block]] = {spec.key: [] for spec in SHEET_SPECS}
     default_font = None
     results: list[WorkbookResult] = []
     total_steps = len(files) + 1
@@ -116,7 +120,7 @@ def build_workbooks(
                     if actual is None:
                         continue
                     try:
-                        blocks[group].append(read_block(source[actual], f"{path.stem} {TAB_LABELS[key]}"))
+                        blocks[key].append(read_block(source[actual], f"{path.stem} {TAB_LABELS[key]}"))
                     except Exception as exc:
                         message = f"tab '{actual}' could not be copied: {exc or type(exc).__name__}"
                         result.problems.append(message)
@@ -138,7 +142,8 @@ def build_workbooks(
         reporter.progress(len(files), total_steps, "Saving Excel files…")
         written: dict[str, OutputResult | None] = {}
         for group, out_path in outputs.items():
-            written[group] = _save(group, blocks[group], default_font, Path(out_path), reporter)
+            sheets = {key: blocks[key] for key in GROUPS[group] if blocks[key]}
+            written[group] = _save(group, sheets, default_font, Path(out_path), reporter)
     finally:
         sources.close()
 
@@ -146,22 +151,24 @@ def build_workbooks(
     return BuildResult(ENGINE_NAME, results, written)
 
 
-def _save(group: str, blocks: list[Block], default_font, out_path: Path, reporter: Reporter) -> OutputResult | None:
+def _save(group: str, sheets: dict[str, list[Block]], default_font, out_path: Path,
+          reporter: Reporter) -> OutputResult | None:
     title = GROUP_TITLES[group]
-    if not blocks:
+    if not sheets:
         reporter.log("warning", f"{title}: no Excel file saved – none of the files had these tabs.")
         return None
     book = Workbook()
+    book.remove(book.active)
     if default_font is not None:
         use_default_font(book, default_font)  # column widths are measured in this font
-    sheet = book.active
-    sheet.title = SHEET_TITLES[group]
-    try:
-        notes = write_blocks(sheet, blocks)
-    except Exception as exc:
-        raise OutputError(f"Could not put the {title.lower()} together: {exc or type(exc).__name__}") from None
-    for note in notes:
-        reporter.log("info", f"{out_path.name}: {note}.")
+    for key, blocks in sheets.items():
+        sheet = book.create_sheet(SHEET_TITLES[key])
+        try:
+            notes = write_blocks(sheet, blocks)
+        except Exception as exc:
+            raise OutputError(f"Could not put the {SHEET_TITLES[key]} together: {exc or type(exc).__name__}") from None
+        for note in notes:
+            reporter.log("info", f"{out_path.name}, {SHEET_TITLES[key]}: {note}.")
     out_path.parent.mkdir(parents=True, exist_ok=True)
     partial = out_path.with_name(out_path.name + ".part")
     try:
@@ -174,8 +181,10 @@ def _save(group: str, blocks: list[Block], default_font, out_path: Path, reporte
     except OSError as exc:
         _remove_quietly(partial)
         raise OutputError(f"Could not save '{out_path}': {exc.strerror or exc}") from None
-    reporter.log("success", f"Saved {out_path.name}: {len(blocks)} tabs one after another on one sheet.")
-    return OutputResult(out_path, pages=0, tabs=len(blocks))
+    count = sum(len(blocks) for blocks in sheets.values())
+    reporter.log("success", f"Saved {out_path.name}: sheets {', '.join(SHEET_TITLES[k] for k in sheets)} "
+                            f"({count} tabs in all).")
+    return OutputResult(out_path, pages=0, tabs=count)
 
 
 def _remove_quietly(path: Path) -> None:
