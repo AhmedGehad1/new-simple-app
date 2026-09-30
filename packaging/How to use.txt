@@ -16,4 +16,4 @@ Needs Microsoft Excel or the free LibreOffice (https://www.libreoffice.org) on t
 If your tabs have different names, click "Tab names..." to change them.
 Your Excel files are only read, never changed.
 
-Latest version: https://github.com/AhmedGehad1/new-simple-app/releases/latest
+Project page: https://github.com/AhmedGehad1/new-simple-app

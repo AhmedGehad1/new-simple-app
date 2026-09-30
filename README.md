@@ -5,12 +5,12 @@ Combines the ECG & NIBP certificates and pass/fail test sheets of many devices i
 ## ⬇️ Download (Windows)
 
 <p align="center">
-  <a href="https://github.com/AhmedGehad1/new-simple-app/releases/latest/download/CertificatePDFBuilder.zip">
+  <a href="https://github.com/AhmedGehad1/new-simple-app/raw/HEAD/download/CertificatePDFBuilder.zip">
     <img src="https://img.shields.io/badge/%E2%AC%87%20Download-CertificatePDFBuilder.zip-1F5FA8?style=for-the-badge" alt="Download CertificatePDFBuilder.zip">
   </a>
 </p>
 
-**Direct link:** <https://github.com/AhmedGehad1/new-simple-app/releases/latest/download/CertificatePDFBuilder.zip>
+**Direct link:** <https://github.com/AhmedGehad1/new-simple-app/raw/HEAD/download/CertificatePDFBuilder.zip>
 
 1. **Click the Download button above.** `CertificatePDFBuilder.zip` (about 23 MB) downloads straight away. You don't need a GitHub account.
 2. **Unzip it:** right-click the downloaded zip → **Extract All…** → **Extract**.
@@ -18,7 +18,6 @@ Combines the ECG & NIBP certificates and pass/fail test sheets of many devices i
 4. If Windows says *"Windows protected your PC"*, click **More info → Run anyway**. It appears only because the app isn't code-signed.
 
 The zip also contains **How to use.txt** with short instructions.
-To see all versions, go to the [Releases page](https://github.com/AhmedGehad1/new-simple-app/releases).
 
 ---
 
@@ -92,9 +91,10 @@ On macOS/Linux the app uses LibreOffice. Linux needs the `python3-tk` package.
 The program appears in `dist\CertificatePDFBuilder.exe`.
 GitHub Actions does the same on every push (`.github/workflows/build.yml`).
 
-**Publish a new download:** raise `__version__` in `certpdf/__init__.py`, then on GitHub go to **Releases → Draft a new release**,
-type a new tag such as `v1.0.1`, and click **Publish release**. A few minutes later the workflow attaches
-`CertificatePDFBuilder.zip` to it, and the Download button at the top always points to the newest release.
+**Update the download:** the Download button serves `download/CertificatePDFBuilder.zip` from this repository.
+After changing the app, download the `CertificatePDFBuilder-windows` artifact from the latest successful Actions run.
+It holds the .exe and *How to use.txt*. Put both in a `CertificatePDFBuilder` folder, zip that folder, and replace
+`download/CertificatePDFBuilder.zip`. Optionally, publishing a GitHub release also gets the zip attached to it automatically.
 
 **Tests:** `pip install -r requirements-dev.txt` then `python -m pytest`. The end-to-end tests run only when LibreOffice is installed.
 
