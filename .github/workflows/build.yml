@@ -13,7 +13,7 @@ permissions:
 
 jobs:
   test:
-    name: Tests (with LibreOffice)
+    name: Tests (with LibreOffice for .xls files)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -30,7 +30,7 @@ jobs:
         run: python -m pytest -v
 
   windows:
-    name: Build CertificatePDFBuilder.exe
+    name: Build CertificateExcelBuilder.exe
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
@@ -46,45 +46,28 @@ jobs:
       - name: Check that the .exe starts
         shell: pwsh
         run: |
-          $p = Start-Process -FilePath dist\CertificatePDFBuilder.exe -ArgumentList "--smoke-test" -Wait -PassThru
+          $p = Start-Process -FilePath dist\CertificateExcelBuilder.exe -ArgumentList "--smoke-test" -Wait -PassThru
           if ($p.ExitCode -ne 0) { throw "The app did not start correctly (exit code $($p.ExitCode))" }
       - name: Make the download zip
         shell: pwsh
         run: |
-          New-Item -ItemType Directory -Force dist\CertificatePDFBuilder | Out-Null
-          Copy-Item dist\CertificatePDFBuilder.exe dist\CertificatePDFBuilder\
-          Copy-Item "packaging\How to use.txt" dist\CertificatePDFBuilder\
-          Compress-Archive -Path dist\CertificatePDFBuilder -DestinationPath dist\CertificatePDFBuilder.zip -Force
+          New-Item -ItemType Directory -Force dist\CertificateExcelBuilder | Out-Null
+          Copy-Item dist\CertificateExcelBuilder.exe dist\CertificateExcelBuilder\
+          Copy-Item "packaging\How to use.txt" dist\CertificateExcelBuilder\
+          Compress-Archive -Path dist\CertificateExcelBuilder -DestinationPath dist\CertificateExcelBuilder.zip -Force
       - uses: actions/upload-artifact@v4
         with:
-          name: CertificatePDFBuilder-windows
-          path: dist/CertificatePDFBuilder/
+          name: CertificateExcelBuilder-windows
+          path: dist/CertificateExcelBuilder/
           if-no-files-found: error
       - name: Attach the zip to the release
         if: github.event_name == 'release'
         uses: softprops/action-gh-release@v2
         with:
-          files: dist/CertificatePDFBuilder.zip
+          files: dist/CertificateExcelBuilder.zip
           append_body: true
           body: |
-            **Download `CertificatePDFBuilder.zip` below**, extract it, and double-click `CertificatePDFBuilder.exe`.
-            Nothing to install. The PC needs Microsoft Excel or the free LibreOffice.
+            **Download `CertificateExcelBuilder.zip` below**, extract it, and double-click `CertificateExcelBuilder.exe`.
+            Nothing to install.
 
             If Windows says "Windows protected your PC", click **More info → Run anyway**.
-
-  windows-libreoffice:
-    # Slow (installs LibreOffice), so it only runs for releases or when started by hand.
-    name: End-to-end test on Windows with LibreOffice
-    if: github.event_name == 'workflow_dispatch' || github.event_name == 'release'
-    runs-on: windows-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.12"
-      - name: Install LibreOffice
-        run: choco install libreoffice-fresh -y --no-progress
-      - name: Install Python packages
-        run: pip install -r requirements.txt pytest
-      - name: Run tests
-        run: python -m pytest -v tests/test_builder.py

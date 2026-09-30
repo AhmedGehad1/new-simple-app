@@ -2,7 +2,7 @@
 
     python tools/build_exe.py
 
-On Windows this creates dist/CertificatePDFBuilder.exe, a single file that
+On Windows this creates dist/CertificateExcelBuilder.exe, a single file that
 runs on any Windows 10/11 PC without installing Python.
 """
 
@@ -38,7 +38,7 @@ def main() -> None:
     build = ROOT / "build"
     build.mkdir(exist_ok=True)
     args = [
-        str(ROOT / "CertificatePDFBuilder.pyw"),
+        str(ROOT / "CertificateExcelBuilder.pyw"),
         "--noconfirm", "--clean", "--onefile", "--windowed",
         "--name", APP_ID,
         "--icon", str(ROOT / "assets" / "app.ico"),
@@ -52,7 +52,7 @@ def main() -> None:
         version_file = build / "version_info.txt"
         version_file.write_text(VERSION_INFO.format(nums=nums, name=APP_NAME, version=__version__, app_id=APP_ID),
                                 encoding="utf-8")
-        args += ["--version-file", str(version_file), "--hidden-import", "win32timezone"]
+        args += ["--version-file", str(version_file)]
     PyInstaller.__main__.run(args)
 
 

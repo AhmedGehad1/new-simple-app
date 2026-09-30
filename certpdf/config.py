@@ -8,7 +8,7 @@ import sys
 from dataclasses import asdict, dataclass, field, fields
 from pathlib import Path
 
-from . import APP_ID
+from . import APP_ID, OLD_APP_ID
 
 
 @dataclass(frozen=True)
@@ -40,28 +40,24 @@ GROUP_TITLES = {
     PASS_FAIL: "Pass/Fail test sheets",
 }
 
-ENGINE_AUTO = "auto"
-ENGINE_EXCEL = "excel"
-ENGINE_LIBREOFFICE = "libreoffice"
-
 
 def default_sheet_names() -> dict[str, str]:
     return {spec.key: spec.default_name for spec in SHEET_SPECS}
 
 
-def app_data_dir() -> Path:
-    """Per-user folder for settings and the LibreOffice profile."""
+def app_data_dir(app_id: str = APP_ID) -> Path:
+    """Per-user folder for the settings."""
     if sys.platform == "win32":
         base = Path(os.environ.get("APPDATA") or Path.home() / "AppData" / "Roaming")
     elif sys.platform == "darwin":
         base = Path.home() / "Library" / "Application Support"
     else:
         base = Path(os.environ.get("XDG_CONFIG_HOME") or Path.home() / ".config")
-    return base / APP_ID
+    return base / app_id
 
 
 def base_name(name: str) -> str:
-    """'Certificates.pdf' -> 'Certificates' (the app adds .xlsx and .pdf itself)."""
+    """'Certificates.xlsx' -> 'Certificates' (the app adds .xlsx itself)."""
     name = name.strip()
     for extension in (".pdf", ".xlsx"):
         if name.lower().endswith(extension):
@@ -74,10 +70,7 @@ class Settings:
     output_dir: str = ""
     certificates_name: str = "Certificates"      # without extension
     passfail_name: str = "Pass-Fail Test Sheets"
-    make_excel: bool = True
-    make_pdf: bool = True
     sheet_names: dict = field(default_factory=default_sheet_names)
-    engine: str = ENGINE_AUTO                    # which program makes the PDFs
     open_folder_when_done: bool = True
     last_browse_dir: str = ""
 
@@ -88,8 +81,11 @@ class Settings:
     @classmethod
     def load(cls) -> "Settings":
         settings = cls()
+        path = cls.path()
+        if not path.exists() and path.parent == app_data_dir():
+            path = app_data_dir(OLD_APP_ID) / "settings.json"  # from before the app was renamed
         try:
-            data = json.loads(cls.path().read_text(encoding="utf-8"))
+            data = json.loads(path.read_text(encoding="utf-8"))
         except (OSError, ValueError):
             return settings
         known = {f.name for f in fields(cls)}
@@ -101,8 +97,6 @@ class Settings:
         names.update({k: v for k, v in settings.sheet_names.items()
                       if k in names and isinstance(v, str) and v.strip()})
         settings.sheet_names = names
-        if settings.engine not in (ENGINE_AUTO, ENGINE_EXCEL, ENGINE_LIBREOFFICE):
-            settings.engine = ENGINE_AUTO
         # Version 1.0 stored names with ".pdf".
         settings.certificates_name = base_name(settings.certificates_name) or cls.certificates_name
         settings.passfail_name = base_name(settings.passfail_name) or cls.passfail_name

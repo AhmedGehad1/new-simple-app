@@ -15,18 +15,60 @@ from __future__ import annotations
 import os
 import threading
 from copy import copy
+from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Protocol
 
 from openpyxl import Workbook
 
-from .builder import BuildResult, Cancelled, OutputError, OutputResult, Reporter, WorkbookResult
-from .config import GROUP_TITLES, GROUPS, SHEET_SPECS
-from .engines import EngineError, LibreOfficeEngine
+from .config import GROUP_TITLES, GROUPS, SHEET_SPECS, SPEC_BY_KEY
+from .libreoffice import ConversionError, LibreOffice
 from .sheet_copy import load_values, use_default_font
 from .stacked_sheet import Block, read_block, write_blocks
 from .workbook_info import match_sheets
 
-ENGINE_NAME = "Excel files"
+
+
+class Reporter(Protocol):
+    def log(self, level: str, text: str) -> None: ...
+    def progress(self, done: int, total: int, text: str) -> None: ...
+    def file_status(self, index: int, state: str, text: str) -> None: ...
+
+
+class Cancelled(Exception):
+    pass
+
+
+class OutputError(Exception):
+    """An Excel file could not be written."""
+
+
+class ReadError(Exception):
+    """A source workbook could not be read."""
+
+
+@dataclass
+class WorkbookResult:
+    path: Path
+    found: dict[str, str | None] = field(default_factory=dict)   # key -> actual tab name
+    problems: list[str] = field(default_factory=list)
+
+    @property
+    def missing(self) -> list[str]:
+        return [SPEC_BY_KEY[key].label for key, name in self.found.items() if name is None]
+
+
+@dataclass
+class OutputResult:
+    path: Path
+    tabs: int
+
+
+@dataclass
+class BuildResult:
+    workbooks: list[WorkbookResult]
+    outputs: dict[str, OutputResult | None]   # group -> written file (None if nothing to write)
+
 SHEET_TITLES = {"ecg_cert": "ECG certificates", "nibp_cert": "NIBP certificates",
                 "ecg_pf": "ECG reports", "nibp_pf": "NIBP reports"}
 TAB_LABELS = {
@@ -41,24 +83,33 @@ class _Sources:
     """Opens source workbooks; old .xls files are converted with LibreOffice when it's installed."""
 
     def __init__(self) -> None:
-        self._libreoffice: LibreOfficeEngine | None = None
+        self._libreoffice: LibreOffice | None = None
 
     def load(self, path: Path):
-        if path.suffix.lower() == ".xls":
-            path = self._convert_xls(path)
         try:
+            if path.suffix.lower() == ".xls":
+                path = self._convert_xls(path)
             return load_values(path)
+        except ReadError:
+            raise
         except Exception as exc:
-            raise EngineError(f"the file could not be read ({exc or type(exc).__name__})") from None
+            raise ReadError(f"the file could not be read ({exc or type(exc).__name__})") from None
 
     def _convert_xls(self, path: Path) -> Path:
         if self._libreoffice is None:
-            if not LibreOfficeEngine.is_available():
-                raise EngineError("Excel files can only be made from .xlsx files; this is an old .xls file "
-                                  "(install LibreOffice to convert it automatically)")
-            self._libreoffice = LibreOfficeEngine()
-            self._libreoffice.start()
-        return self._libreoffice.convert_to_xlsx(path)
+            if not LibreOffice.is_available():
+                raise ReadError("this is an old .xls file. Open it in Excel and save it as .xlsx, "
+                                "or install LibreOffice (free) to convert it automatically")
+            self._libreoffice = LibreOffice()
+            try:
+                self._libreoffice.start()
+            except ConversionError as exc:
+                self._libreoffice = None
+                raise ReadError(str(exc)) from None
+        try:
+            return self._libreoffice.convert_to_xlsx(path)
+        except ConversionError as exc:
+            raise ReadError(str(exc)) from None
 
     def close(self) -> None:
         if self._libreoffice is not None:
@@ -98,7 +149,7 @@ def build_workbooks(
             results.append(result)
             try:
                 source = sources.load(path)
-            except EngineError as exc:
+            except ReadError as exc:
                 result.problems.append(str(exc))
                 reporter.log("error", f"{path.name}: {exc}")
                 reporter.file_status(index, "error", "Failed – see the messages below")
@@ -148,7 +199,7 @@ def build_workbooks(
         sources.close()
 
     reporter.progress(total_steps, total_steps, "Excel files finished")
-    return BuildResult(ENGINE_NAME, results, written)
+    return BuildResult(results, written)
 
 
 def _save(group: str, sheets: dict[str, list[Block]], default_font, out_path: Path,
@@ -184,7 +235,7 @@ def _save(group: str, sheets: dict[str, list[Block]], default_font, out_path: Pa
     count = sum(len(blocks) for blocks in sheets.values())
     reporter.log("success", f"Saved {out_path.name}: sheets {', '.join(SHEET_TITLES[k] for k in sheets)} "
                             f"({count} tabs in all).")
-    return OutputResult(out_path, pages=0, tabs=count)
+    return OutputResult(out_path, tabs=count)
 
 
 def _remove_quietly(path: Path) -> None:

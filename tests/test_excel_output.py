@@ -14,10 +14,9 @@ from openpyxl.utils.indexed_list import IndexedList
 from openpyxl.worksheet.pagebreak import Break
 
 from certpdf.config import CERTIFICATES, PASS_FAIL, default_sheet_names
-from certpdf.engines import LibreOfficeEngine
+from certpdf.libreoffice import LibreOffice
 from certpdf.excel_output import build_workbooks
 from certpdf.stacked_sheet import DIGIT_PX, read_block, write_blocks
-from certpdf.workbook_info import auto_height_rows
 
 TABS = ["Device data", "ECG.certificate", "NIBP.certificate", "ECG.pass-fail test sheet", "NIBP.pass-fail sheet"]
 FOOTER = "Code No MECL-TR-05"
@@ -251,21 +250,7 @@ def test_group_without_tabs_is_not_saved(template, tmp_path):
     assert any("no Excel file saved" in text for level, text in recorder.logs if level == "warning")
 
 
-def test_auto_height_rows(template, tmp_path):
-    path = template("dev.xlsx")
-    # openpyxl always writes customHeight; make row 3 look like a height Excel calculated itself.
-    patched = tmp_path / "patched.xlsx"
-    with zipfile.ZipFile(path) as zin, zipfile.ZipFile(patched, "w") as zout:
-        for item in zin.infolist():
-            data = zin.read(item.filename)
-            if item.filename == "xl/worksheets/sheet2.xml":
-                data = re.sub(rb'(<row r="3"[^>]*?) customHeight="1"', rb"\1", data)
-            zout.writestr(item, data)
-    rows = auto_height_rows(patched, ["ECG.certificate", "NIBP.certificate"])
-    assert rows == {"ECG.certificate": {3}, "NIBP.certificate": set()}
-
-
-soffice = LibreOfficeEngine.find()
+soffice = LibreOffice.find()
 
 
 @pytest.mark.skipif(soffice is None, reason="LibreOffice is not installed")
@@ -288,3 +273,24 @@ def test_values_not_formulas(tmp_path):
     values = [c.value for row in load_workbook(outputs[CERTIFICATES])["ECG certificates"].iter_rows() for c in row
               if c.value is not None]
     assert values == ["F23-AGH019-0626", 42]
+
+
+@pytest.mark.skipif(soffice is None, reason="LibreOffice is not installed")
+def test_old_xls_files_are_converted(template, tmp_path):
+    xlsx = template("dev.xlsx")
+    xls_dir = tmp_path / "xls"
+    subprocess.run([soffice, f"-env:UserInstallation={(tmp_path / 'profile').as_uri()}", "--headless",
+                    "--convert-to", "xls", "--outdir", str(xls_dir), str(xlsx)],
+                   check=True, capture_output=True, timeout=180)
+    result, outputs, _ = build([xls_dir / "dev.xls"], tmp_path)
+    assert result.workbooks[0].problems == []
+    assert titles_in_order(load_workbook(outputs[CERTIFICATES])["ECG certificates"]) == ["dev ECG.certificate"]
+
+
+def test_old_xls_without_libreoffice_is_explained(tmp_path, monkeypatch):
+    import certpdf.excel_output as excel_output
+    monkeypatch.setattr(excel_output.LibreOffice, "is_available", classmethod(lambda cls: False))
+    xls = tmp_path / "old.xls"
+    xls.write_bytes(b"old")
+    result, outputs, _ = build([xls], tmp_path)
+    assert "save it as .xlsx" in result.workbooks[0].problems[0]

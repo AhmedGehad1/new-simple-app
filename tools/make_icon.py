@@ -35,13 +35,13 @@ def draw() -> Image.Image:
              (565, base + 70), (600, base - 230), (640, base + 150), (672, base), (right - 40, base)]
     d.line(trace, fill=(214, 40, 57, 255), width=38, joint="curve")
 
-    # "PDF" band
-    d.rounded_rectangle((left - 60, 610, right - 40, 800), radius=36, fill=(214, 40, 57, 255))
+    # "XLS" band
+    d.rounded_rectangle((left - 60, 610, right - 40, 800), radius=36, fill=(30, 125, 69, 255))
     try:
         font = ImageFont.truetype("DejaVuSans-Bold.ttf", 150)
     except OSError:
         font = ImageFont.load_default()
-    text = "PDF"
+    text = "XLS"
     box = d.textbbox((0, 0), text, font=font)
     cx, cy = (left - 60 + right - 40) / 2, 705
     d.text((cx - (box[2] - box[0]) / 2 - box[0], cy - (box[3] - box[1]) / 2 - box[1]), text,

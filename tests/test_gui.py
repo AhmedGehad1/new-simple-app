@@ -73,77 +73,29 @@ def dialogs(monkeypatch):
     return shown
 
 
-def test_excel_files_are_made_when_no_program_can_make_pdfs(app, workbook_factory, tmp_path, monkeypatch, dialogs):
-    # Like a PC with only Excel 2007: Excel can't save PDFs and LibreOffice isn't installed.
-    from contextlib import contextmanager
-
-    import certpdf.gui as gui
-    from certpdf.engines import EngineError
-
-    @contextmanager
-    def no_pdf_engine(choice, log):
-        raise EngineError("Microsoft Excel: this version of Excel cannot save PDFs")
-        yield
-
-    monkeypatch.setattr(gui, "open_engine", no_pdf_engine)
-    monkeypatch.setattr(gui, "available_engines", lambda: {"excel": True, "libreoffice": False})
+def test_creates_the_two_excel_files(app, workbook_factory, tmp_path, dialogs):
     out = tmp_path / "out"
     app.add_paths([workbook_factory("dev1.xlsx"), workbook_factory("dev2.xlsx")])
     app.output_var.set(str(out))
+    app.cert_name_var.set("Batch 7 certificates.xlsx")  # a typed extension is dropped
     run_to_end(app)
 
-    assert sorted(p.name for p in out.iterdir()) == ["Certificates.xlsx", "Pass-Fail Test Sheets.xlsx"]
+    assert sorted(p.name for p in out.iterdir()) == ["Batch 7 certificates.xlsx", "Pass-Fail Test Sheets.xlsx"]
     kind, title, message = dialogs[-1]
-    assert kind == "askyesno" and title == "Files created"
-    assert "PDF files were not made" in message and "LibreOffice" in message
+    assert kind == "showinfo" and title == "Files created"
     assert [r[-1] for r in rows(app)] == ["Done", "Done"]
     assert "2 files saved" in app.status_label.cget("text")
 
 
-def test_tab_errors_in_the_pdf_step_are_reported(app, workbook_factory, tmp_path, monkeypatch, dialogs):
-    from contextlib import contextmanager
-
-    import certpdf.gui as gui
-    from certpdf.workbook_info import read_sheet_names
-
-    class FailingEngine:
-        name = "Microsoft Excel"
-
-        @contextmanager
-        def open(self, path):
-            class Workbook:
-                sheet_names = read_sheet_names(path)
-
-                def export_many(self, jobs):
-                    return {sheet: "Exception occurred. (code 0x800A03EC)" for sheet, _ in jobs}
-            yield Workbook()
-
-    @contextmanager
-    def fake_open_engine(choice, log):
-        yield FailingEngine()
-
-    monkeypatch.setattr(gui, "open_engine", fake_open_engine)
-    monkeypatch.setattr(gui, "available_engines", lambda: {"excel": True, "libreoffice": False})
+def test_unreadable_file_is_reported(app, workbook_factory, tmp_path, dialogs):
+    broken = tmp_path / "broken.xlsx"
+    broken.write_bytes(b"not a workbook")
     out = tmp_path / "out"
-    app.add_paths([workbook_factory("dev.xlsx")])
+    app.add_paths([workbook_factory("dev.xlsx"), broken])
     app.output_var.set(str(out))
     run_to_end(app)
 
     assert sorted(p.name for p in out.iterdir()) == ["Certificates.xlsx", "Pass-Fail Test Sheets.xlsx"]
-    assert rows(app)[0][-1] == "Failed – see the messages below"
+    assert [r[-1] for r in rows(app)] == ["Done", "Failed – see the messages below"]
     kind, title, message = dialogs[-1]
-    assert kind == "showwarning" and "had problems: dev.xlsx" in message
-    assert "0x800A03EC" in app.log_text.get("1.0", "end")
-
-
-def test_only_excel_files(app, workbook_factory, tmp_path, dialogs):
-    out = tmp_path / "out"
-    app.make_pdf_var.set(False)
-    app._update_engine_note()
-    assert app.engine_note.cget("text") == ""
-    app.add_paths([workbook_factory("dev.xlsx")])
-    app.output_var.set(str(out))
-    app.cert_name_var.set("Batch 7 certificates.pdf")  # a typed extension is dropped
-    run_to_end(app)
-    assert sorted(p.name for p in out.iterdir()) == ["Batch 7 certificates.xlsx", "Pass-Fail Test Sheets.xlsx"]
-    assert dialogs[-1][0] == "showinfo"
+    assert kind == "showwarning" and "had problems: broken.xlsx" in message

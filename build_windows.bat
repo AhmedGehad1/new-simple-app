@@ -1,5 +1,5 @@
 @echo off
-rem Builds dist\CertificatePDFBuilder.exe (needs Python 3.9+ from python.org).
+rem Builds dist\CertificateExcelBuilder.exe (needs Python 3.9+ from python.org).
 setlocal
 cd /d "%~dp0"
 
@@ -13,7 +13,7 @@ if not exist .venv\Scripts\python.exe (
 .venv\Scripts\python.exe tools\build_exe.py || goto :error
 
 echo.
-echo Done! The program is dist\CertificatePDFBuilder.exe
+echo Done! The program is dist\CertificateExcelBuilder.exe
 pause
 exit /b 0
 
