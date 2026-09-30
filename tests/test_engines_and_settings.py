@@ -102,3 +102,13 @@ def test_settings_ignore_bad_values(tmp_path, monkeypatch):
 
     path.write_text("{not json")
     assert Settings.load() == Settings()
+
+
+def test_settings_from_version_1_0_are_migrated(tmp_path, monkeypatch):
+    path = tmp_path / "settings.json"
+    monkeypatch.setattr(Settings, "path", classmethod(lambda cls: path))
+    path.write_text(json.dumps({"certificates_name": "Certificates.pdf", "passfail_name": "PF sheets.PDF"}))
+    loaded = Settings.load()
+    assert loaded.certificates_name == "Certificates"
+    assert loaded.passfail_name == "PF sheets"
+    assert loaded.make_excel and loaded.make_pdf

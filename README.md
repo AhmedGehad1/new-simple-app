@@ -1,6 +1,6 @@
 # Certificate PDF Builder
 
-Combines the ECG & NIBP certificates and pass/fail test sheets of many devices into **two print-ready PDF files**.
+Combines the ECG & NIBP certificates and pass/fail test sheets of many devices into **Excel and PDF files**.
 
 ## ⬇️ Download (Windows)
 
@@ -23,23 +23,33 @@ The zip also contains **How to use.txt** with short instructions.
 
 ## What it does
 
-You pick the Excel workbooks (one per device). For every workbook, the app prints these tabs exactly as they would come out of the printer:
+You pick the Excel workbooks (one per device). For every workbook, the app collects these tabs, in the order of your list:
 
-| PDF | Pages, for every device in your list |
+| File | Contents, for every device in your list |
 | --- | --- |
-| **Certificates.pdf** | `ECG.certificate`, then `NIBP.certificate` |
-| **Pass-Fail Test Sheets.pdf** | `ECG.pass-fail`, then `NIBP.pass-fail` |
+| **Certificates** (.xlsx and .pdf) | `ECG.certificate`, then `NIBP.certificate` |
+| **Pass-Fail Test Sheets** (.xlsx and .pdf) | `ECG.pass-fail`, then `NIBP.pass-fail` |
 
-Device 1's pages come first, then device 2's, and so on. Each PDF also gets bookmarks (one per device) so you can jump to any device.
+* **Excel files:** one tab per sheet (for example `F23-AGH019-0626 ECG cert`, `F23-AGH019-0626 NIBP cert`, …).
+  Each tab keeps its layout and page setup and holds the values from the original, so it no longer
+  depends on the other tabs. To get everything on paper or in one PDF yourself, open the file in any Excel
+  version and choose **Print → Print entire workbook**. Making the Excel files doesn't need Excel at all.
+* **PDF files:** the same pages as printing each tab, with a bookmark for every device.
+
+**The app never prints anything.** It only reads your Excel files and never changes them.
 
 ## What the PC needs
 
-The app uses the PC's spreadsheet program to print the tabs, so it needs **one** of these:
+* **Excel files:** nothing extra.
+* **PDF files:** one of these.
+  * **Microsoft Excel 2010 or newer.** Excel 2007 cannot save PDFs, because Microsoft's "Save as PDF"
+    add-in for it is no longer available.
+  * **LibreOffice** (free, [download](https://www.libreoffice.org/download/download-libreoffice/)).
+    Once it's installed, the app uses it automatically; you don't need to open it.
 
-* **Microsoft Excel** (recommended): gives exactly the same pages as *File → Print* in Excel.
-* **LibreOffice** (free, [download](https://www.libreoffice.org/download/download-libreoffice/)) for PCs without Excel.
-
-The app finds whichever is installed on its own. With *Convert with: Automatic*, Excel is used when available.
+With *PDFs made with: Automatic* (under **Options…**), the app checks whether Excel can save PDFs and uses
+LibreOffice when it can't. If neither can, the Excel files are still created and the app tells you why no PDFs
+were made.
 
 ---
 
@@ -47,18 +57,20 @@ The app finds whichever is installed on its own. With *Convert with: Automatic*,
 
 1. **Choose the Excel files.** Click **＋ Add files…** (or **Add folder…**).
    The table shows ✔ / ✖ for each of the four tabs, so you can see straight away if a tab is missing.
-   The PDFs follow the order of the list. Use **▲ ▼** or **Sort A–Z** to change it.
-2. **Where to save.** Pick the folder and, if you want, change the two PDF file names.
-3. Click **Create PDFs**. The table shows the progress of each file. At the end a summary appears and the folder
-   opens (untick *Open the folder when finished* if you don't want that). The **Open:** links show the PDFs right away.
+   The output follows the order of the list. Use **▲ ▼** or **Sort A–Z** to change it.
+2. **Where to save.** Pick the folder and, if you want, change the two file names (the app adds `.xlsx` / `.pdf`).
+   Under **Save as**, tick **Excel files**, **PDF files** or both.
+3. Click **Create files**. The table shows the progress of each file. At the end a summary appears and the folder
+   opens (untick *Open the folder when finished* if you don't want that). The **Open:** links show the files right away.
 
 ### Tab names
 
 The app looks for tabs named `ECG.certificate`, `NIBP.certificate`, `ECG.pass-fail` and `NIBP.pass-fail`.
-Capital letters, spaces, dots and dashes don't matter, so `ECG Certificate` or `ecg_certificate` are found too.
-If your workbooks use different names, click **Tab names…** and type them in. The app remembers them.
+Capital letters, spaces, dots and dashes don't matter, and extra words are fine. For example,
+`ECG.pass-fail test sheet` and `NIBP.pass-fail sheet` are found too.
+If your workbooks use different names, click **Options…** and type them in. The app remembers them.
 
-Files with a missing tab are still processed: the tabs that exist go into the PDFs, and the app tells you what was left out.
+Files with a missing tab are still processed: the tabs that exist are included, and the app tells you what was left out.
 
 ---
 
@@ -66,13 +78,10 @@ Files with a missing tab are still processed: the tabs that exist go into the PD
 
 | Problem | What to do |
 | --- | --- |
-| *"Excel / LibreOffice not found"* | Install LibreOffice (free) or run the app on a PC with Excel. |
-| A tab shows ✖ | Select the file: the line under the table lists the tabs it has. Fix the name under **Tab names…**. |
-| *"Could not save … is it open in a PDF viewer?"* | Close the PDF in Acrobat, Edge, etc. and click **Create PDFs** again. |
-| Pages look different from Excel's print preview | Choose **Convert with: Microsoft Excel**. LibreOffice can differ slightly with some fonts. |
-| Page layout is wrong (cut off, several pages) | Fix the tab's *Page Layout* (print area, *Fit to 1 page*) in the Excel file; the app prints what Excel prints. |
-
-The app never changes your Excel files; it only reads them.
+| *"PDF files were not made"* | Your Excel can't save PDFs (e.g. Excel 2007). Install LibreOffice (free), or use the Excel files: open one and choose *Print → Print entire workbook*. |
+| A tab shows ✖ | Select the file: the line under the table lists the tabs it has. Fix the name under **Options…**. |
+| *"Could not save … is it open?"* | Close the file in Excel / the PDF viewer and click **Create files** again. |
+| Page layout is wrong (cut off, several pages) | Fix the tab's *Page Layout* (print area, *Fit to 1 page*) in the original Excel file; the app keeps that setup. |
 
 ---
 
@@ -85,7 +94,7 @@ pip install -r requirements.txt
 python -m certpdf            # or double-click CertificatePDFBuilder.pyw on Windows
 ```
 
-On macOS/Linux the app uses LibreOffice. Linux needs the `python3-tk` package.
+On macOS/Linux, PDFs are made with LibreOffice. Linux needs the `python3-tk` package.
 
 **Build the Windows .exe yourself:** on a Windows PC with Python installed, double-click `build_windows.bat`.
 The program appears in `dist\CertificatePDFBuilder.exe`.
@@ -101,8 +110,10 @@ It holds the .exe and *How to use.txt*. Put both in a `CertificatePDFBuilder` fo
 | Path | What it is |
 | --- | --- |
 | `certpdf/gui.py` | The window (tkinter) |
-| `certpdf/builder.py` | Prints the tabs of every workbook and merges them into the two PDFs |
-| `certpdf/engines.py` | Printing a tab with Microsoft Excel (COM automation) or LibreOffice (headless) |
+| `certpdf/excel_output.py` | Copies the tabs of every workbook into the two Excel files |
+| `certpdf/sheet_copy.py` | Copies one tab (values, formatting, page setup) into another workbook |
+| `certpdf/builder.py` | Turns the tabs of every workbook into PDF and merges them into the two PDFs |
+| `certpdf/engines.py` | Saving a tab as PDF with Microsoft Excel (COM, never printing) or LibreOffice (headless) |
 | `certpdf/workbook_info.py` | Reading tab names and matching them without opening Excel |
 | `certpdf/config.py` | Tab definitions and saved settings |
 | `tools/build_exe.py` | PyInstaller build of the single-file .exe |

@@ -26,7 +26,7 @@ def _prepare_windows() -> None:
 
 def _missing_modules() -> list[str]:
     """Modules the packaged app must contain (checked by --smoke-test)."""
-    names = ["pypdf", "xlrd"]
+    names = ["pypdf", "xlrd", "openpyxl"]
     if sys.platform == "win32":
         names += ["pythoncom", "win32com.client"]
     missing = []

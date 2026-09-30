@@ -2,7 +2,7 @@
 
 Everything here works on the file itself, so it needs neither Excel nor
 LibreOffice. It is used to show which tabs were found as soon as files are
-added, and by the LibreOffice engine to print a single tab.
+added.
 """
 
 from __future__ import annotations
@@ -61,9 +61,6 @@ def match_sheets(wanted: dict[str, str], available: list[str]) -> dict[str, str 
 
 _SHEET_TAG = re.compile(r"<(?:[\w.-]+:)?sheet\s[^>]*>")
 _NAME_ATTR = re.compile(r"""\sname\s*=\s*(["'])(.*?)\1""", re.S)
-_STATE_ATTR = re.compile(r"""\sstate\s*=\s*(["']).*?\1""", re.S)
-_VIEW_TAG = re.compile(r"<(?:[\w.-]+:)?workbookView\b[^>]*>")
-_VIEW_ATTRS = re.compile(r"""\s(?:activeTab|firstSheet)\s*=\s*(["']).*?\1""", re.S)
 
 
 def read_sheet_names(path: Path) -> list[str]:
@@ -126,42 +123,45 @@ def _sheet_names_from_xml(workbook_xml: str) -> list[str]:
 
 
 # --------------------------------------------------------------------------
-# Single-tab copies (used by the LibreOffice engine)
+# Row heights
 # --------------------------------------------------------------------------
 
-def isolate_sheet(src: Path, dst: Path, sheet_name: str) -> None:
-    """Write a copy of *src* to *dst* in which only *sheet_name* is visible.
+_REL_TAG = re.compile(r"<(?:[\w.-]+:)?Relationship\s[^>]*>")
+_ROW_TAG = re.compile(r"<(?:[\w.-]+:)?row\s[^>]*>")
 
-    Hidden tabs are not printed, so converting the copy to PDF prints just
-    that one tab with its own page setup. Only the tab visibility flags in
-    the workbook XML are changed; every other part is copied byte for byte.
+
+def auto_height_rows(path: Path, sheet_names: list[str]) -> dict[str, set[int]]:
+    """Rows whose height Excel worked out itself (not set by hand), per tab.
+
+    openpyxl can't tell these apart from fixed heights. Other programs
+    recalculate them, so copies meant for LibreOffice should leave them
+    automatic too. Returns empty sets when the file can't be read.
     """
-    with zipfile.ZipFile(src) as zin:
-        part = _workbook_part(zin)
-        xml = zin.read(part).decode("utf-8")
-        names = _sheet_names_from_xml(xml)
-        if sheet_name not in names:
-            raise WorkbookReadError(f"tab '{sheet_name}' not found")
-        index = names.index(sheet_name)
-
-        position = iter(range(len(names)))
-
-        def set_state(match: re.Match) -> str:
-            tag = _STATE_ATTR.sub("", match.group(0))
-            if not _NAME_ATTR.search(tag):
-                return tag
-            if next(position) != index:
-                tag = re.sub(r"^(<[\w.:-]+)", r'\1 state="hidden"', tag, count=1)
-            return tag
-
-        def set_view(match: re.Match) -> str:
-            tag = _VIEW_ATTRS.sub("", match.group(0))
-            return re.sub(r"^(<[\w.:-]+)", rf'\1 activeTab="{index}" firstSheet="{index}"', tag, count=1)
-
-        xml = _SHEET_TAG.sub(set_state, xml)
-        xml = _VIEW_TAG.sub(set_view, xml, count=1)
-
-        with zipfile.ZipFile(dst, "w", zipfile.ZIP_DEFLATED) as zout:
-            for item in zin.infolist():
-                data = xml.encode("utf-8") if item.filename == part else zin.read(item.filename)
-                zout.writestr(item, data)
+    found: dict[str, set[int]] = {name: set() for name in sheet_names}
+    try:
+        with zipfile.ZipFile(path) as zf:
+            part = _workbook_part(zf)
+            folder = posixpath.dirname(part)
+            rels_xml = zf.read(posixpath.join(folder, "_rels", posixpath.basename(part) + ".rels")).decode("utf-8")
+            targets = {}
+            for rel in _REL_TAG.findall(rels_xml):
+                rel_id = re.search(r"""\sId\s*=\s*(["'])(.*?)\1""", rel)
+                target = re.search(r"""\sTarget\s*=\s*(["'])(.*?)\1""", rel)
+                if rel_id and target:
+                    targets[rel_id.group(2)] = target.group(2)
+            for tag in _SHEET_TAG.findall(zf.read(part).decode("utf-8")):
+                name = _NAME_ATTR.search(tag)
+                rel_id = re.search(r"""\s[\w.-]*:?id\s*=\s*(["'])(.*?)\1""", tag)
+                if not name or not rel_id or html.unescape(name.group(2)) not in found:
+                    continue
+                target = targets.get(rel_id.group(2), "")
+                sheet_part = target.lstrip("/") if target.startswith("/") else posixpath.join(folder, target)
+                rows = found[html.unescape(name.group(2))]
+                for row in _ROW_TAG.findall(zf.read(posixpath.normpath(sheet_part)).decode("utf-8")):
+                    number = re.search(r"""\sr\s*=\s*["'](\d+)["']""", row)
+                    if number and re.search(r"\sht\s*=", row) and not re.search(
+                            r"""\scustomHeight\s*=\s*["'](1|true)["']""", row):
+                        rows.add(int(number.group(1)))
+    except (OSError, KeyError, ValueError, zipfile.BadZipFile, WorkbookReadError):
+        pass
+    return found

@@ -12,13 +12,15 @@ import shutil
 import subprocess
 import sys
 import tempfile
-import time
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Callable, Iterator
 
+from openpyxl import Workbook
+
 from .config import ENGINE_AUTO, ENGINE_EXCEL, ENGINE_LIBREOFFICE
-from .workbook_info import WorkbookReadError, isolate_sheet, read_sheet_names
+from .sheet_copy import adopt_default_font, copy_sheet, load_values
+from .workbook_info import auto_height_rows
 
 LIBREOFFICE_DOWNLOAD_URL = "https://www.libreoffice.org/download/download-libreoffice/"
 
@@ -30,12 +32,19 @@ class EngineError(Exception):
 # --------------------------------------------------------------------------
 # Microsoft Excel (Windows)
 # --------------------------------------------------------------------------
+#
+# Only ExportAsFixedFormat ("Save as PDF") is used. Nothing is ever sent to a
+# printer: Excel 2007 sends print jobs to the real printer even when told to
+# use "Microsoft Print to PDF".
 
 XL_TYPE_PDF = 0
 XL_QUALITY_STANDARD = 0
 XL_SHEET_VISIBLE = -1
 MSO_AUTOMATION_SECURITY_FORCE_DISABLE = 3
-PDF_PRINTER = "Microsoft Print to PDF"
+
+
+class EngineUnusable(EngineError):
+    """The engine cannot make PDFs on this PC at all."""
 
 
 def _com_message(exc: Exception) -> str:
@@ -66,35 +75,8 @@ def _copy_file_contents(src: Path, dst: Path) -> None:
         shutil.copyfileobj(reader, writer, 1024 * 1024)
 
 
-def _pdf_printer_names() -> list[str]:
-    """Names Excel may accept for Windows' built-in PDF printer."""
-    names = [PDF_PRINTER]
-    try:
-        import winreg
-        with winreg.OpenKey(winreg.HKEY_CURRENT_USER,
-                            r"Software\Microsoft\Windows NT\CurrentVersion\Devices") as key:
-            port = str(winreg.QueryValueEx(key, PDF_PRINTER)[0]).split(",")[-1]
-        names.append(f"{PDF_PRINTER} on {port}")
-    except (ImportError, OSError, IndexError):
-        pass
-    return names
-
-
 def _has_content(path: Path) -> bool:
     return path.exists() and path.stat().st_size > 0
-
-
-def _wait_for_pdf(path: Path, timeout: float) -> bool:
-    """Printing finishes in the background; wait until the PDF is fully written."""
-    deadline = time.monotonic() + timeout
-    last_size = -1
-    while time.monotonic() < deadline:
-        size = path.stat().st_size if path.exists() else -1
-        if size > 0 and size == last_size:
-            return True
-        last_size = size
-        time.sleep(0.5)
-    return _has_content(path)
 
 
 class ExcelEngine:
@@ -104,15 +86,6 @@ class ExcelEngine:
         self._app = None
         self._com_ready = False
         self._tmp: Path | None = None
-        self.log: Callable[[str, str], None] = lambda level, text: None
-        # Ways to turn a tab into a PDF, best first. The first one that works
-        # on this PC is moved to the front and used from then on.
-        self.methods = [
-            ("export", self._export),
-            ("export from a copy of the tab", self._export_copy),
-            (f"print to “{PDF_PRINTER}”", self._print_to_pdf_printer),
-            ("export ignoring the print area", self._export_ignoring_print_area),
-        ]
 
     @staticmethod
     def is_available() -> bool:
@@ -157,6 +130,37 @@ class ExcelEngine:
                 pass
         self._app = app
         self._tmp = Path(tempfile.mkdtemp(prefix="certpdf-xl-"))
+        try:
+            self.check_pdf_export()
+        except EngineUnusable:
+            self.stop()
+            raise
+
+    def check_pdf_export(self) -> None:
+        """Save a scratch workbook as PDF to find out whether this Excel can make PDFs.
+
+        Excel 2007 can't without Microsoft's separate "Save as PDF" add-in.
+        """
+        probe = self._tmp / "pdf-check.pdf"
+        book = None
+        try:
+            book = self._app.Workbooks.Add()
+            sheet = book.Worksheets(1)
+            sheet.Range("A1").Value = "PDF check"
+            sheet.ExportAsFixedFormat(XL_TYPE_PDF, str(probe), XL_QUALITY_STANDARD, False, False)
+            if not _has_content(probe):
+                raise EngineError("no PDF was created")
+        except Exception as exc:
+            reason = str(exc) if isinstance(exc, EngineError) else _com_message(exc)
+            raise EngineUnusable(
+                f"this version of Excel cannot save PDFs ({reason}). Excel 2007 needs Microsoft's "
+                "“Save as PDF” add-in, which is no longer available") from None
+        finally:
+            if book is not None:
+                try:
+                    book.Close(SaveChanges=False)
+                except Exception:
+                    pass
 
     def stop(self) -> None:
         if self._app is not None:
@@ -177,8 +181,9 @@ class ExcelEngine:
     def open(self, path: Path) -> Iterator["_ExcelWorkbook"]:
         # Excel works on a local copy: files on network shares, files marked as
         # downloaded, and files someone else has open all cause export errors.
+        # The copy keeps the file name, which formulas such as CELL("filename") show.
         work = Path(tempfile.mkdtemp(dir=self._tmp))
-        local = work / f"workbook{Path(path).suffix.lower()}"
+        local = work / Path(path).name
         try:
             try:
                 _copy_file_contents(Path(path), local)
@@ -199,7 +204,7 @@ class ExcelEngine:
             except Exception as exc:
                 raise EngineError(f"Excel could not open the file ({_com_message(exc)})") from None
             try:
-                yield _ExcelWorkbook(self, workbook)
+                yield _ExcelWorkbook(workbook)
             finally:
                 try:
                     workbook.Close(SaveChanges=False)
@@ -208,95 +213,32 @@ class ExcelEngine:
         finally:
             shutil.rmtree(work, ignore_errors=True)
 
-    def convert(self, sheet, pdf_path: Path) -> None:
-        """Turn one tab into a PDF, trying each method until one works."""
-        failures = []
-        for position, (label, method) in enumerate(self.methods):
-            _remove_quietly(pdf_path)
-            try:
-                method(sheet, pdf_path)
-                printed = method == self._print_to_pdf_printer
-                if not (_wait_for_pdf(pdf_path, timeout=60) if printed else _has_content(pdf_path)):
-                    raise EngineError("no PDF was created")
-            except Exception as exc:
-                message = str(exc) if isinstance(exc, EngineError) else _com_message(exc)
-                failures.append(f"{label}: {message}")
-                continue
-            if position:
-                self.methods.insert(0, self.methods.pop(position))
-                self.log("warning" if "ignoring" in label else "info",
-                         f"Excel's normal PDF export did not work on this PC; using “{label}” instead.")
-            return
-        raise EngineError("Excel could not convert it. " + " | ".join(failures))
-
-    # Methods, best first -------------------------------------------------
-
-    @staticmethod
-    def _export(sheet, pdf_path: Path) -> None:
-        # Same as printing the tab: uses its print area, orientation, scaling, headers...
-        sheet.ExportAsFixedFormat(XL_TYPE_PDF, str(pdf_path), XL_QUALITY_STANDARD, True, False)
-
-    def _export_copy(self, sheet, pdf_path: Path) -> None:
-        # Copying a tab on its own into a new workbook keeps its page setup.
-        count = self._app.Workbooks.Count
-        sheet.Copy()
-        if self._app.Workbooks.Count <= count:
-            raise EngineError("the tab could not be copied")
-        book = self._app.Workbooks(self._app.Workbooks.Count)
-        try:
-            book.ExportAsFixedFormat(XL_TYPE_PDF, str(pdf_path), XL_QUALITY_STANDARD, True, False)
-        finally:
-            try:
-                book.Close(SaveChanges=False)
-            except Exception:
-                pass
-
-    @staticmethod
-    def _print_to_pdf_printer(sheet, pdf_path: Path) -> None:
-        errors = []
-        for printer in _pdf_printer_names():
-            try:
-                sheet.PrintOut(ActivePrinter=printer, PrintToFile=True, PrToFileName=str(pdf_path))
-                return
-            except Exception as exc:
-                errors.append(_com_message(exc))
-        raise EngineError(f"the “{PDF_PRINTER}” printer is not available ({errors[-1]})")
-
-    @staticmethod
-    def _export_ignoring_print_area(sheet, pdf_path: Path) -> None:
-        # Last resort for tabs whose print area is broken: prints the used range.
-        sheet.ExportAsFixedFormat(XL_TYPE_PDF, str(pdf_path), XL_QUALITY_STANDARD, True, True)
-
 
 class _ExcelWorkbook:
-    def __init__(self, engine: ExcelEngine, workbook) -> None:
-        self._engine = engine
+    def __init__(self, workbook) -> None:
         self._workbook = workbook
         self.sheet_names = [sheet.Name for sheet in workbook.Worksheets]
 
     def export_many(self, jobs: list[tuple[str, Path]]) -> dict[str, str]:
         errors = {}
         for sheet_name, pdf_path in jobs:
+            pdf_path = Path(pdf_path)
             try:
                 sheet = self._workbook.Worksheets(sheet_name)
                 if sheet.Visible != XL_SHEET_VISIBLE:
                     try:
-                        sheet.Visible = XL_SHEET_VISIBLE  # hidden tabs cannot be printed
+                        sheet.Visible = XL_SHEET_VISIBLE  # hidden tabs cannot be exported
                     except Exception:
                         pass
-                self._engine.convert(sheet, Path(pdf_path))
+                # Same pages as printing the tab (print area, scaling, footer...), saved as a file.
+                sheet.ExportAsFixedFormat(XL_TYPE_PDF, str(pdf_path), XL_QUALITY_STANDARD, True, False)
+                if not _has_content(pdf_path):
+                    raise EngineError("Excel did not create the PDF (is the tab empty?)")
             except EngineError as exc:
                 errors[sheet_name] = str(exc)
             except Exception as exc:
                 errors[sheet_name] = _com_message(exc)
         return errors
-
-
-def _remove_quietly(path: Path) -> None:
-    try:
-        os.remove(path)
-    except OSError:
-        pass
 
 
 # --------------------------------------------------------------------------
@@ -350,23 +292,24 @@ class LibreOfficeEngine:
         path = Path(path).resolve()
         work = Path(tempfile.mkdtemp(dir=self._tmp))
         try:
-            suffix = path.suffix.lower()
-            if suffix == ".xls":
-                # Old-style workbooks are converted once so single tabs can be picked out.
-                shutil.copyfile(path, work / "source.xls")
-                self.run(["--convert-to", "xlsx", "--outdir", str(work), str(work / "source.xls")], timeout=180)
-                source = work / "source.xlsx"
-                if not source.exists():
-                    raise EngineError("LibreOffice could not read this .xls file")
-            else:
-                source = path
+            source = self.convert_to_xlsx(path, work) if path.suffix.lower() == ".xls" else path
             try:
-                names = read_sheet_names(source)
-            except WorkbookReadError as exc:
-                raise EngineError(f"the file could not be read ({exc})") from None
-            yield _LibreOfficeWorkbook(self, source, names, work)
+                book = load_values(source)
+            except Exception as exc:
+                raise EngineError(f"the file could not be read ({exc or type(exc).__name__})") from None
+            yield _LibreOfficeWorkbook(self, book, auto_height_rows(source, book.sheetnames), work)
         finally:
             shutil.rmtree(work, ignore_errors=True)
+
+    def convert_to_xlsx(self, path: Path, work: Path | None = None) -> Path:
+        """Convert an old .xls workbook to .xlsx; the result lives until stop()."""
+        work = work or Path(tempfile.mkdtemp(dir=self._tmp))
+        shutil.copyfile(path, work / "source.xls")
+        self.run(["--convert-to", "xlsx", "--outdir", str(work), str(work / "source.xls")], timeout=180)
+        converted = work / "source.xlsx"
+        if not converted.exists():
+            raise EngineError("LibreOffice could not read this .xls file")
+        return converted
 
     def run(self, args: list[str], timeout: float) -> str:
         profile = (self._tmp / "profile").as_uri()
@@ -389,21 +332,34 @@ class LibreOfficeEngine:
 
 
 class _LibreOfficeWorkbook:
-    def __init__(self, engine: LibreOfficeEngine, source: Path, sheet_names: list[str], work: Path) -> None:
+    """Converts tabs through one-tab copies holding the values Excel saved.
+
+    Converting the original workbook would not work: LibreOffice prints hidden
+    tabs that have a print area, and it recalculates formulas (a certificate
+    number taken from the file name would come out wrong).
+    """
+
+    def __init__(self, engine: LibreOfficeEngine, book, auto_rows: dict[str, set[int]], work: Path) -> None:
         self._engine = engine
-        self._source = source
+        self._book = book
+        self._auto_rows = auto_rows
         self._work = work
-        self.sheet_names = sheet_names
+        self.sheet_names = list(book.sheetnames)
 
     def export_many(self, jobs: list[tuple[str, Path]]) -> dict[str, str]:
         errors: dict[str, str] = {}
         copies = []
         for number, (sheet_name, pdf_path) in enumerate(jobs):
-            copy = self._work / f"tab{number}{self._source.suffix.lower()}"
+            copy = self._work / f"tab{number}.xlsx"
             try:
-                isolate_sheet(self._source, copy, sheet_name)
-            except (WorkbookReadError, OSError, KeyError, ValueError) as exc:
-                errors[sheet_name] = f"could not prepare the tab ({exc})"
+                single = Workbook()
+                adopt_default_font(single, self._book)
+                single.active.title = sheet_name
+                # Rows Excel sized itself are left for LibreOffice to size, as with the original.
+                copy_sheet(self._book[sheet_name], single.active, self._auto_rows.get(sheet_name, set()))
+                single.save(copy)
+            except Exception as exc:
+                errors[sheet_name] = f"could not prepare the tab ({exc or type(exc).__name__})"
                 continue
             copies.append((sheet_name, copy, Path(pdf_path)))
         if not copies:
@@ -470,7 +426,6 @@ def open_engine(preference: str, log: Callable[[str, str], None] = lambda level,
     errors = []
     for key in keys:
         engine = ENGINE_CLASSES[key]()
-        engine.log = log
         try:
             engine.start()
         except EngineError as exc:

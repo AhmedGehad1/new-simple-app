@@ -27,9 +27,11 @@ from .config import (
     PASS_FAIL,
     SHEET_SPECS,
     Settings,
+    base_name,
     default_sheet_names,
 )
 from .engines import LIBREOFFICE_DOWNLOAD_URL, EngineError, available_engines, open_engine
+from .excel_output import build_workbooks
 from .icon import CHECKBOX_PNG_BASE64, HEADER_ICON_PNG_BASE64, ICON_PNG_BASE64
 from .workbook_info import WorkbookReadError, is_excel_file, match_sheets, read_sheet_names
 
@@ -135,6 +137,30 @@ class QueueReporter:
 
     def file_status(self, index: int, state: str, text: str) -> None:
         self.events.put(("file", index, state, text))
+
+
+@dataclass
+class RunResult:
+    excel: BuildResult | None = None
+    pdf: BuildResult | None = None
+    pdf_error: str = ""      # why no PDFs could be made at all
+
+
+class StageReporter:
+    """Spreads the progress of the Excel step and the PDF step over one progress bar."""
+
+    def __init__(self, reporter: QueueReporter, stage: int, stages: int) -> None:
+        self.reporter, self.stage, self.stages = reporter, stage, max(stages, 1)
+
+    def log(self, level: str, text: str) -> None:
+        self.reporter.log(level, text)
+
+    def progress(self, done: int, total: int, text: str) -> None:
+        fraction = (self.stage + done / max(total, 1)) / self.stages
+        self.reporter.progress(int(fraction * 1000), 1000, text)
+
+    def file_status(self, index: int, state: str, text: str) -> None:
+        self.reporter.file_status(index, state, text)
 
 
 class App(tk.Tk):
@@ -303,7 +329,7 @@ class App(tk.Tk):
         tk.Label(text, text=APP_NAME, font=self.font_title, bg=HEADER, fg="white", anchor="w").pack(fill="x")
         tk.Label(text, bg=HEADER, fg=HEADER_TEXT, font=self.font_subtitle, anchor="w", justify="left",
                  text="Combine the ECG & NIBP certificates and pass/fail test sheets of many devices "
-                      "into two print-ready PDF files.").pack(fill="x")
+                      "into Excel and PDF files.").pack(fill="x")
         tk.Label(inner, text=f"v{__version__}", bg=HEADER, fg=HEADER_TEXT, font=self.font_small).pack(
             side="right", anchor="n")
 
@@ -336,7 +362,7 @@ class App(tk.Tk):
     def _build_files_card(self, parent) -> tk.Frame:
         px = self.px
         card, body, head = self._card(parent, 1, "Choose the Excel files",
-                                      "one workbook per device – the PDFs follow this order")
+                                      "one workbook per device – the output follows this order")
         self.count_label = ttk.Label(head, style="Muted.Card.TLabel")
         self.count_label.pack(side="right")
 
@@ -401,7 +427,11 @@ class App(tk.Tk):
         self.output_var = tk.StringVar(value=self.settings.output_dir)
         self.cert_name_var = tk.StringVar(value=self.settings.certificates_name)
         self.pf_name_var = tk.StringVar(value=self.settings.passfail_name)
+        self.make_excel_var = tk.BooleanVar(value=self.settings.make_excel)
+        self.make_pdf_var = tk.BooleanVar(value=self.settings.make_pdf)
         self.open_folder_var = tk.BooleanVar(value=self.settings.open_folder_when_done)
+        self.engine_var = tk.StringVar(value=self.settings.engine)
+        self.engine_button: ttk.Menubutton | None = None  # lives in the Options dialog
 
         ttk.Label(body, text="Folder", style="Field.Card.TLabel").grid(row=0, column=0, sticky="w")
         folder_row = ttk.Frame(body, style="Card.TFrame")
@@ -410,14 +440,16 @@ class App(tk.Tk):
         folder = ttk.Entry(folder_row, textvariable=self.output_var)
         folder.grid(row=0, column=0, sticky="ew", padx=(0, px(6)))
         self._lockable.append(folder)
-        self._button(folder_row, "Browse…", self._choose_output_dir, "Choose the folder for the PDFs").grid(
+        self._button(folder_row, "Browse…", self._choose_output_dir, "Choose the folder for the files").grid(
             row=0, column=1)
 
         rows = (
-            (self.cert_name_var, "Certificates PDF",
-             "Gets the ECG certificate, then the NIBP certificate, of every device"),
-            (self.pf_name_var, "Pass/Fail PDF",
-             "Gets the ECG pass/fail sheet, then the NIBP pass/fail sheet, of every device"),
+            (self.cert_name_var, "Certificates",
+             "File name for the ECG certificate, then the NIBP certificate, of every device\n"
+             "(.xlsx and .pdf are added automatically)"),
+            (self.pf_name_var, "Pass/Fail sheets",
+             "File name for the ECG pass/fail sheet, then the NIBP pass/fail sheet, of every device\n"
+             "(.xlsx and .pdf are added automatically)"),
         )
         for row, (var, label, hint) in enumerate(rows, start=1):
             name_label = ttk.Label(body, text=label, style="Field.Card.TLabel")
@@ -428,20 +460,20 @@ class App(tk.Tk):
             Tooltip(name_label, hint, self.font_small)
             Tooltip(entry, hint, self.font_small)
 
-        ttk.Label(body, text="Convert with", style="Field.Card.TLabel").grid(row=3, column=0, sticky="w",
-                                                                          pady=(px(8), 0))
-        engine_row = ttk.Frame(body, style="Card.TFrame")
-        engine_row.grid(row=3, column=1, sticky="ew", padx=(px(12), 0), pady=(px(8), 0))
-        self.engine_var = tk.StringVar(value=self.settings.engine)
-        self.engine_button = ttk.Menubutton(engine_row, style="Select.TMenubutton", width=24, takefocus=False)
-        menu = tk.Menu(self.engine_button, tearoff=False)
-        for key, label in ENGINE_CHOICES:
-            menu.add_radiobutton(label=label, value=key, variable=self.engine_var, command=self._update_engine_note)
-        self.engine_button.configure(menu=menu, text=dict(ENGINE_CHOICES)[self._engine_choice()])
-        self.engine_button.pack(side="left")
-        self._lockable.append(self.engine_button)
-        self.engine_note = tk.Label(engine_row, bg=CARD, fg=MUTED, font=self.font_small, anchor="w")
-        self.engine_note.pack(side="left", padx=(px(8), 0))
+        ttk.Label(body, text="Save as", style="Field.Card.TLabel").grid(row=3, column=0, sticky="w",
+                                                                     pady=(px(8), 0))
+        kinds = ttk.Frame(body, style="Card.TFrame")
+        kinds.grid(row=3, column=1, sticky="ew", padx=(px(12), 0), pady=(px(8), 0))
+        excel = ttk.Checkbutton(kinds, text="Excel files", variable=self.make_excel_var, takefocus=False)
+        excel.pack(side="left")
+        Tooltip(excel, "One Excel file per group, one tab per sheet, in list order.\n"
+                       "Works on any PC and never prints anything.", self.font_small)
+        pdf = ttk.Checkbutton(kinds, text="PDF files", variable=self.make_pdf_var, takefocus=False,
+                              command=self._update_engine_note)
+        pdf.pack(side="left", padx=(px(14), 0))
+        self._lockable += [excel, pdf]
+        self.engine_note = tk.Label(kinds, bg=CARD, fg=MUTED, font=self.font_small, anchor="w")
+        self.engine_note.pack(side="left", padx=(px(6), 0))
 
         options = ttk.Frame(body, style="Card.TFrame")
         options.grid(row=4, column=0, columnspan=2, sticky="ew", pady=(px(10), 0))
@@ -449,8 +481,9 @@ class App(tk.Tk):
                                 takefocus=False)
         check.pack(side="left")
         self._lockable.append(check)
-        self._button(options, "Tab names…", self._edit_tab_names,
-                     "Change the names of the tabs to look for in each file", style="Link.TButton").pack(side="right")
+        self._button(options, "Options…", self._edit_options,
+                     "Tab names to look for, and which program makes the PDFs",
+                     style="Link.TButton").pack(side="right")
 
         self.sheet_vars: dict[str, tk.StringVar] = {}
         for spec in SHEET_SPECS:
@@ -461,13 +494,13 @@ class App(tk.Tk):
 
     def _build_run_card(self, parent) -> tk.Frame:
         px = self.px
-        card, body, _ = self._card(parent, 3, "Create the PDFs")
+        card, body, _ = self._card(parent, 3, "Create the files")
         body.columnconfigure(0, weight=1)
         body.rowconfigure(4, weight=1)
 
         buttons = ttk.Frame(body, style="Card.TFrame")
         buttons.grid(row=0, column=0, sticky="ew")
-        self.create_button = self._button(buttons, "Create PDFs", self._start, style="Primary.TButton")
+        self.create_button = self._button(buttons, "Create files", self._start, style="Primary.TButton")
         self.create_button.pack(side="left")
         self.cancel_button = self._button(buttons, "Cancel", self._cancel, lock=False)
         self.cancel_button.pack(side="left", padx=(px(8), 0), fill="y")
@@ -475,16 +508,16 @@ class App(tk.Tk):
 
         self.progress = ttk.Progressbar(body, style="Accent.Horizontal.TProgressbar", mode="determinate")
         self.progress.grid(row=1, column=0, sticky="ew", pady=(px(12), 0))
-        self.status_label = ttk.Label(body, text="Add your Excel files, then click “Create PDFs”.",
+        self.status_label = ttk.Label(body, text="Add your Excel files, then click “Create files”.",
                                       style="Status.Card.TLabel", justify="left")
         self.status_label.grid(row=2, column=0, sticky="w", pady=(px(4), 0))
         body.bind("<Configure>", lambda e: self.status_label.configure(wraplength=max(150, e.width - px(4))))
 
         self.results_bar = ttk.Frame(body, style="Card.TFrame")
         ttk.Label(self.results_bar, text="Open:", style="Card.TLabel").pack(side="left")
-        self.open_cert_button = self._button(self.results_bar, "Certificates PDF",
+        self.open_cert_button = self._button(self.results_bar, "Certificates",
                                              lambda: self._open_output(CERTIFICATES), style="Link.TButton")
-        self.open_pf_button = self._button(self.results_bar, "Pass/Fail PDF",
+        self.open_pf_button = self._button(self.results_bar, "Pass/Fail",
                                            lambda: self._open_output(PASS_FAIL), style="Link.TButton")
         self.open_folder_button = self._button(self.results_bar, "Folder", self._open_output_folder,
                                                style="Link.TButton")
@@ -507,11 +540,11 @@ class App(tk.Tk):
         self.log_text.tag_configure("success", foreground=OK)
         return card
 
-    def _edit_tab_names(self) -> None:
+    def _edit_options(self) -> None:
         px = self.px
         dialog = tk.Toplevel(self)
         dialog.withdraw()
-        dialog.title("Tab names")
+        dialog.title("Options")
         dialog.configure(bg=CARD)
         dialog.transient(self)
         dialog.resizable(False, False)
@@ -521,7 +554,8 @@ class App(tk.Tk):
             row=0, column=0, columnspan=2, sticky="w")
         ttk.Label(frame, style="Muted.Card.TLabel", justify="left",
                   text="Capital letters, spaces, dots and dashes are ignored, so\n"
-                       "“ECG Certificate” also finds a tab called “ECG.certificate”.").grid(
+                       "“ECG Certificate” also finds a tab called “ECG.certificate”.\n"
+                       "The list of files updates as you type.").grid(
             row=1, column=0, columnspan=2, sticky="w", pady=(px(2), px(10)))
         first = None
         for row, spec in enumerate(SHEET_SPECS, start=2):
@@ -530,15 +564,31 @@ class App(tk.Tk):
             entry = ttk.Entry(frame, textvariable=self.sheet_vars[spec.key], width=30)
             entry.grid(row=row, column=1, sticky="ew", padx=(px(12), 0), pady=px(4))
             first = first or entry
-        buttons = ttk.Frame(frame, style="Card.TFrame")
-        buttons.grid(row=len(SHEET_SPECS) + 2, column=0, columnspan=2, sticky="ew", pady=(px(14), 0))
-        ttk.Button(buttons, text="Reset to defaults", command=self._reset_tab_names, takefocus=False).pack(side="left")
-        close = ttk.Button(buttons, text="Done", command=dialog.destroy, style="Primary.TButton", takefocus=False)
-        close.pack(side="right")
-        ttk.Label(frame, style="Muted.Card.TLabel", justify="left",
-                  text="The list of files updates as you type.").grid(
-            row=len(SHEET_SPECS) + 3, column=0, columnspan=2, sticky="w", pady=(px(10), 0))
+        row = len(SHEET_SPECS) + 2
+        ttk.Button(frame, text="Reset tab names", command=self._reset_tab_names, takefocus=False).grid(
+            row=row, column=1, sticky="e", pady=(px(4), 0))
 
+        ttk.Label(frame, text="PDFs are made with", style="Section.Card.TLabel").grid(
+            row=row + 1, column=0, columnspan=2, sticky="w", pady=(px(16), 0))
+        ttk.Label(frame, style="Muted.Card.TLabel", justify="left",
+                  text="Automatic uses Excel when it can save PDFs (Excel 2010 or newer),\n"
+                       "otherwise the free LibreOffice. Nothing is ever sent to a printer.").grid(
+            row=row + 2, column=0, columnspan=2, sticky="w", pady=(px(2), px(8)))
+        self.engine_button = ttk.Menubutton(frame, style="Select.TMenubutton", width=24, takefocus=False)
+        menu = tk.Menu(self.engine_button, tearoff=False)
+        for key, label in ENGINE_CHOICES:
+            menu.add_radiobutton(label=label, value=key, variable=self.engine_var, command=self._update_engine_note)
+        self.engine_button.configure(menu=menu)
+        self.engine_button.grid(row=row + 3, column=0, columnspan=2, sticky="w")
+        self._update_engine_note()
+
+        close = ttk.Button(frame, text="Done", command=dialog.destroy, style="Primary.TButton", takefocus=False)
+        close.grid(row=row + 4, column=0, columnspan=2, sticky="e", pady=(px(18), 0))
+
+        def closed(_event=None):
+            if _event is None or _event.widget is dialog:
+                self.engine_button = None
+        dialog.bind("<Destroy>", closed)
         dialog.bind("<Return>", lambda _e: dialog.destroy())
         dialog.bind("<Escape>", lambda _e: dialog.destroy())
         dialog.update_idletasks()
@@ -735,7 +785,7 @@ class App(tk.Tk):
     # ------------------------------------------------------------------ options
 
     def _choose_output_dir(self) -> None:
-        folder = filedialog.askdirectory(parent=self, title="Save the PDFs in…",
+        folder = filedialog.askdirectory(parent=self, title="Save the files in…",
                                          initialdir=self.output_var.get() or self.settings.last_browse_dir or None)
         if folder:
             self.output_var.set(str(Path(folder)))
@@ -749,48 +799,51 @@ class App(tk.Tk):
         return choice if choice in dict(ENGINE_CHOICES) else ENGINE_AUTO
 
     def _update_engine_note(self) -> None:
+        """Say next to "PDF files" which program will make the PDFs."""
         excel, libre = self.engines.get(ENGINE_EXCEL), self.engines.get(ENGINE_LIBREOFFICE)
         choice = self._engine_choice()
-        self.engine_button.configure(text=dict(ENGINE_CHOICES)[choice])
-        if not excel and not libre:
-            self.engine_note.configure(text="Excel / LibreOffice not found – click for help", fg=ERROR,
-                                       cursor="hand2")
-            self.engine_note.bind("<Button-1>", lambda _e: self._explain_missing_engine())
-            return
+        if self.engine_button is not None:
+            self.engine_button.configure(text=dict(ENGINE_CHOICES)[choice])
         self.engine_note.unbind("<Button-1>")
+        if not self.make_pdf_var.get():
+            self.engine_note.configure(text="", cursor="")
+            return
         if choice == ENGINE_AUTO:
-            text, colour = f"will use {'Microsoft Excel' if excel else 'LibreOffice'}", MUTED
-        elif self.engines.get(choice):
-            text, colour = "installed ✔", OK
+            ok = excel or libre
+            text = ("with Excel or LibreOffice" if excel and libre else "with LibreOffice" if libre
+                    else "with Excel (2010 or newer)" if excel else "needs LibreOffice – click here")
         else:
-            text, colour = "not installed on this PC", ERROR
-        self.engine_note.configure(text=text, fg=colour, cursor="")
+            ok = self.engines.get(choice)
+            name = ENGINE_NAMES[choice]
+            text = f"with {name}" if ok else f"{name} not found – click here"
+        self.engine_note.configure(text=text, fg=MUTED if ok else ERROR, cursor="" if ok else "hand2")
+        if not ok:
+            self.engine_note.bind("<Button-1>", lambda _e: self._explain_missing_engine())
 
-    def _explain_missing_engine(self, name: str = "") -> None:
-        what = name or "Microsoft Excel or LibreOffice"
+    def _explain_missing_engine(self) -> None:
         if messagebox.askyesno(
-                f"{what} is needed",
-                f"{what} is needed to convert the Excel tabs to PDF, but it was not found on this PC.\n\n"
-                "If Microsoft Excel is not available, you can install LibreOffice – it is free.\n\n"
+                "PDFs need LibreOffice",
+                "To make PDFs, this app needs Excel 2010 or newer, or the free LibreOffice.\n\n"
+                "Excel 2007 cannot save PDFs. The Excel files work without it.\n\n"
                 "Open the LibreOffice download page now?", parent=self):
             webbrowser.open(LIBREOFFICE_DOWNLOAD_URL)
 
     def _collect_settings(self) -> None:
         s = self.settings
         s.output_dir = self.output_var.get().strip()
-        s.certificates_name = self.cert_name_var.get().strip() or Settings.certificates_name
-        s.passfail_name = self.pf_name_var.get().strip() or Settings.passfail_name
+        s.certificates_name = base_name(self.cert_name_var.get()) or Settings.certificates_name
+        s.passfail_name = base_name(self.pf_name_var.get()) or Settings.passfail_name
+        s.make_excel = bool(self.make_excel_var.get())
+        s.make_pdf = bool(self.make_pdf_var.get())
         s.sheet_names = self._wanted_names()
         s.engine = self._engine_choice()
         s.open_folder_when_done = bool(self.open_folder_var.get())
 
     # ------------------------------------------------------------------ running
 
-    def _pdf_name(self, var: tk.StringVar, default: str) -> str | None:
-        name = var.get().strip() or default
-        if not name.lower().endswith(".pdf"):
-            name += ".pdf"
-        if INVALID_FILENAME.search(name) or name.strip(". ") in ("", "pdf"):
+    def _file_base(self, var: tk.StringVar, default: str) -> str | None:
+        name = base_name(var.get()) or default
+        if INVALID_FILENAME.search(name) or not name.strip(". "):
             return None
         var.set(name)
         return name
@@ -802,6 +855,10 @@ class App(tk.Tk):
         if not self.entries:
             messagebox.showinfo(APP_NAME, "Add at least one Excel file first.", parent=self)
             return
+        make_excel, make_pdf = self.settings.make_excel, self.settings.make_pdf
+        if not make_excel and not make_pdf:
+            messagebox.showinfo(APP_NAME, "Tick “Excel files”, “PDF files” or both.", parent=self)
+            return
         gone = [e.path.name for e in self.entries if not e.path.exists()]
         if gone:
             messagebox.showerror(APP_NAME, "These files no longer exist – remove them from the list:\n\n"
@@ -810,24 +867,23 @@ class App(tk.Tk):
 
         folder = self.output_var.get().strip() or str(self.entries[0].path.parent)
         self.output_var.set(folder)
-        cert_name = self._pdf_name(self.cert_name_var, Settings.certificates_name)
-        pf_name = self._pdf_name(self.pf_name_var, Settings.passfail_name)
+        cert_name = self._file_base(self.cert_name_var, Settings.certificates_name)
+        pf_name = self._file_base(self.pf_name_var, Settings.passfail_name)
         if not cert_name or not pf_name:
-            messagebox.showerror(APP_NAME, 'A PDF file name is not valid. Names cannot contain  < > : " / \\ | ? *',
+            messagebox.showerror(APP_NAME, 'A file name is not valid. Names cannot contain  < > : " / \\ | ? *',
                                  parent=self)
             return
         if cert_name.lower() == pf_name.lower():
-            messagebox.showerror(APP_NAME, "The two PDF files need different names.", parent=self)
+            messagebox.showerror(APP_NAME, "The certificates and the pass/fail sheets need different file names.",
+                                 parent=self)
             return
 
         self.engines = available_engines()
         self._update_engine_note()
         choice = self._engine_choice()
-        if choice == ENGINE_AUTO and not any(self.engines.values()):
+        if make_pdf and not make_excel and not (self.engines.get(choice) if choice != ENGINE_AUTO
+                                                else any(self.engines.values())):
             self._explain_missing_engine()
-            return
-        if choice != ENGINE_AUTO and not self.engines.get(choice):
-            self._explain_missing_engine(ENGINE_NAMES[choice])
             return
 
         try:
@@ -835,8 +891,10 @@ class App(tk.Tk):
         except OSError as exc:
             messagebox.showerror(APP_NAME, f"The folder could not be created:\n{folder}\n\n{exc}", parent=self)
             return
-        outputs = {CERTIFICATES: Path(folder) / cert_name, PASS_FAIL: Path(folder) / pf_name}
-        existing = [p.name for p in outputs.values() if p.exists()]
+        names = {CERTIFICATES: cert_name, PASS_FAIL: pf_name}
+        excel_outputs = {g: Path(folder) / f"{n}.xlsx" for g, n in names.items()} if make_excel else {}
+        pdf_outputs = {g: Path(folder) / f"{n}.pdf" for g, n in names.items()} if make_pdf else {}
+        existing = [p.name for p in (*excel_outputs.values(), *pdf_outputs.values()) if p.exists()]
         if existing and not messagebox.askyesno(
                 APP_NAME, "These files already exist in the folder:\n\n" + "\n".join(existing)
                 + "\n\nReplace them?", icon="warning", parent=self):
@@ -855,25 +913,36 @@ class App(tk.Tk):
             self._update_row(index)
         self._clear_log()
         self.results_bar.grid_forget()
-        self.progress.configure(value=0, maximum=len(self.entries) + 1)
+        self.progress.configure(value=0, maximum=1000)
         self.status_label.configure(text="Starting…", foreground=MUTED)
         self._set_running(True)
 
         self.cancel_event.clear()
         files = [e.path for e in self.entries]
         self.worker = threading.Thread(target=self._work, name="builder", daemon=True,
-                                       args=(files, self._wanted_names(), outputs, choice))
+                                       args=(files, self._wanted_names(), excel_outputs, pdf_outputs, choice))
         self.worker.start()
 
-    def _work(self, files, sheet_names, outputs, engine_choice) -> None:
+    def _work(self, files, sheet_names, excel_outputs, pdf_outputs, engine_choice) -> None:
         reporter = QueueReporter(self.events)
+        stages = int(bool(excel_outputs)) + int(bool(pdf_outputs))
+        run = RunResult()
         try:
-            with open_engine(engine_choice, reporter.log) as engine:
-                result = build_pdfs(files, sheet_names, outputs, engine, reporter, self.cancel_event)
-            self.events.put(("finished", result))
+            if excel_outputs:
+                run.excel = build_workbooks(files, sheet_names, excel_outputs,
+                                            StageReporter(reporter, 0, stages), self.cancel_event)
+            if pdf_outputs:
+                try:
+                    with open_engine(engine_choice, reporter.log) as engine:
+                        run.pdf = build_pdfs(files, sheet_names, pdf_outputs, engine,
+                                             StageReporter(reporter, stages - 1, stages), self.cancel_event)
+                except EngineError as exc:  # no program on this PC can make PDFs
+                    run.pdf_error = str(exc)
+                    reporter.log("warning", f"PDF files were not made: {exc}")
+            self.events.put(("finished", run))
         except Cancelled:
             self.events.put(("cancelled",))
-        except (EngineError, OutputError) as exc:
+        except OutputError as exc:
             self.events.put(("failed", str(exc)))
         except Exception as exc:  # keep the window alive whatever happens
             self.events.put(("log", "error", traceback.format_exc().strip()))
@@ -910,12 +979,12 @@ class App(tk.Tk):
                 elif kind == "finished":
                     self._finished(event[1])
                 elif kind == "cancelled":
-                    self._stopped("Cancelled – no PDFs were saved.", WARN)
+                    self._stopped("Cancelled.", WARN)
                 elif kind == "failed":
                     self._stopped("Failed – see the messages below.", ERROR)
                     self._log("error", event[1])
                     if not self.closing:
-                        messagebox.showerror("The PDFs could not be created", event[1], parent=self)
+                        messagebox.showerror("The files could not be created", event[1], parent=self)
         except queue.Empty:
             pass
         if self.closing and self.worker is None:
@@ -933,59 +1002,70 @@ class App(tk.Tk):
         self.status_label.configure(text=text, foreground=colour)
         self._log("warning" if colour == WARN else "error", text)
 
-    def _finished(self, result: BuildResult) -> None:
+    def _finished(self, run: RunResult) -> None:
         self.worker = None
         self._set_running(False)
         if self.closing:
             return
         self.progress.configure(value=self.progress["maximum"])
-        self.last_outputs = {group: out.path for group, out in result.outputs.items() if out}
+        results = [r for r in (run.excel, run.pdf) if r]
+        self.last_outputs = {}
+        for result in results:  # PDFs come last, so they win for the "Open" links
+            self.last_outputs.update({group: out.path for group, out in result.outputs.items() if out})
 
-        missing = sum(len(w.missing) for w in result.workbooks)
-        failed = [w for w in result.workbooks if w.problems]
-        lines = []
-        for group, title in ((CERTIFICATES, "Certificates"), (PASS_FAIL, "Pass/Fail")):
-            out = result.outputs.get(group)
-            reason = "the tabs could not be converted" if failed else "no matching tabs found"
-            lines.append(f"• {out.path.name} – {out.tabs} tabs, {out.pages} pages" if out
-                         else f"• {title} PDF – not created ({reason})")
+        # One status per file, from both steps
+        failed_files, missing = [], 0
+        for index, entry in enumerate(self.entries):
+            per_step = [r.workbooks[index] for r in results if index < len(r.workbooks)]
+            problems = [p for w in per_step for p in w.problems]
+            tabs_missing = max((len(w.missing) for w in per_step), default=0)
+            missing += tabs_missing
+            if problems:
+                failed_files.append(entry.path.name)
+                entry.state, entry.status = "error", "Failed – see the messages below"
+            elif tabs_missing:
+                entry.state, entry.status = "warning", f"Done – {tabs_missing} tab(s) missing"
+            else:
+                entry.state, entry.status = "done", "Done"
+            self._update_row(index)
+
+        saved = [out for r in results for out in r.outputs.values() if out]
+        lines = [f"• {out.path.name} – {out.tabs} tabs" + (f", {out.pages} pages" if out.pages else "")
+                 for out in saved]
+        notes = []
+        if run.pdf_error:
+            notes.append(f"PDF files were not made: {run.pdf_error}.")
         if missing:
-            lines.append(f"\n{missing} tab(s) were missing and left out.")
-        if failed:
-            lines.append(f"{len(failed)} file(s) could not be converted: " + ", ".join(w.path.name for w in failed))
-        if missing or failed:
-            lines.append("See the messages in the window for details.")
+            notes.append(f"{missing} tab(s) were missing and left out.")
+        if failed_files:
+            notes.append(f"{len(failed_files)} file(s) had problems: {', '.join(failed_files)}. "
+                         "See the messages in the window.")
+        warn = bool(notes)
 
-        if self.last_outputs:
-            colour = WARN if (missing or failed) else OK
-            summary = "Finished with warnings" if (missing or failed) else "Finished"
-            saved = len(self.last_outputs)
+        if saved:
+            summary = "Finished with warnings" if warn else "Finished"
             self.status_label.configure(
-                text=f"{'⚠' if colour == WARN else '✔'}  {summary} – {saved} PDF{'s' if saved != 1 else ''} saved.",
-                foreground=colour)
+                text=f"{'⚠' if warn else '✔'}  {summary} – {len(saved)} file{'s' if len(saved) != 1 else ''} saved.",
+                foreground=WARN if warn else OK)
             self.open_cert_button.state(["!disabled"] if CERTIFICATES in self.last_outputs else ["disabled"])
             self.open_pf_button.state(["!disabled"] if PASS_FAIL in self.last_outputs else ["disabled"])
             self.results_bar.grid(row=3, column=0, sticky="w", pady=(self.px(4), 0))
-            show = messagebox.showwarning if (missing or failed) else messagebox.showinfo
-            show("PDFs created", "The PDFs were saved:\n\n" + "\n".join(lines), parent=self)
+            message = f"Saved in {saved[0].path.parent}:\n\n" + "\n".join(lines)
+            if notes:
+                message += "\n\n" + "\n\n".join(notes)
+            if run.pdf_error and not self.engines.get(ENGINE_LIBREOFFICE):
+                if messagebox.askyesno("Files created", message + "\n\nTo get PDFs as well, install LibreOffice "
+                                       "(free). Open the download page now?", icon="warning", parent=self):
+                    webbrowser.open(LIBREOFFICE_DOWNLOAD_URL)
+            else:
+                (messagebox.showwarning if warn else messagebox.showinfo)("Files created", message, parent=self)
             if self.open_folder_var.get():
                 self._open_output_folder()
-        elif failed:
-            self.status_label.configure(text="Nothing was saved – the tabs could not be converted. "
-                                             "See the messages below.", foreground=ERROR)
-            first = failed[0].problems[0]
-            messagebox.showerror(
-                "The tabs could not be converted",
-                f"The tabs were found, but {result.engine_name} could not turn them into PDF.\n\n"
-                f"First error ({failed[0].path.name}):\n{first[:400]}\n\n"
-                "Things to try:\n"
-                "• Open one of the files in Excel and use File → Export → Create PDF. If that fails too, "
-                "Excel itself cannot make PDFs on this PC (check that Office is activated and a printer is set up).\n"
-                "• Or choose “Convert with: LibreOffice” (free to install).", parent=self)
         else:
-            self.status_label.configure(text="Nothing was saved – no matching tabs were found.", foreground=ERROR)
-            messagebox.showerror(APP_NAME, "No PDF was created.\n\n" + "\n".join(lines)
-                                 + "\n\nCheck the tab names under “Tab names…”.", parent=self)
+            self.status_label.configure(text="Nothing was saved – see the messages below.", foreground=ERROR)
+            hint = ("Check the tab names under “Options…”." if not failed_files and not run.pdf_error
+                    else "See the messages in the window for details.")
+            messagebox.showerror(APP_NAME, "\n\n".join(["No file was created.", *notes, hint]), parent=self)
 
     def _open_output(self, group: str) -> None:
         path = self.last_outputs.get(group)
@@ -1025,7 +1105,7 @@ class App(tk.Tk):
         self._collect_settings()
         self.settings.save()
         if self.worker:
-            if not messagebox.askyesno(APP_NAME, "PDFs are still being created. Stop and close?", parent=self):
+            if not messagebox.askyesno(APP_NAME, "The files are still being created. Stop and close?", parent=self):
                 return
             self.closing = True
             self._cancel()

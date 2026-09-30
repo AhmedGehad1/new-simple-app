@@ -60,13 +60,24 @@ def app_data_dir() -> Path:
     return base / APP_ID
 
 
+def base_name(name: str) -> str:
+    """'Certificates.pdf' -> 'Certificates' (the app adds .xlsx and .pdf itself)."""
+    name = name.strip()
+    for extension in (".pdf", ".xlsx"):
+        if name.lower().endswith(extension):
+            name = name[: -len(extension)].rstrip()
+    return name
+
+
 @dataclass
 class Settings:
     output_dir: str = ""
-    certificates_name: str = "Certificates.pdf"
-    passfail_name: str = "Pass-Fail Test Sheets.pdf"
+    certificates_name: str = "Certificates"      # without extension
+    passfail_name: str = "Pass-Fail Test Sheets"
+    make_excel: bool = True
+    make_pdf: bool = True
     sheet_names: dict = field(default_factory=default_sheet_names)
-    engine: str = ENGINE_AUTO
+    engine: str = ENGINE_AUTO                    # which program makes the PDFs
     open_folder_when_done: bool = True
     last_browse_dir: str = ""
 
@@ -92,6 +103,9 @@ class Settings:
         settings.sheet_names = names
         if settings.engine not in (ENGINE_AUTO, ENGINE_EXCEL, ENGINE_LIBREOFFICE):
             settings.engine = ENGINE_AUTO
+        # Version 1.0 stored names with ".pdf".
+        settings.certificates_name = base_name(settings.certificates_name) or cls.certificates_name
+        settings.passfail_name = base_name(settings.passfail_name) or cls.passfail_name
         return settings
 
     def save(self) -> None:

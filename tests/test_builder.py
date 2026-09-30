@@ -178,3 +178,27 @@ def test_libreoffice_end_to_end(workbook_factory, tmp_path):
         "MonC ECG.pass-fail", "MonC NIBP.pass-fail",
     ]
     assert engine._tmp is None  # temporary files were removed
+
+
+@needs_libreoffice
+def test_libreoffice_prints_only_the_wanted_tab(tmp_path):
+    # Real templates give every tab (hidden ones too) a print area; LibreOffice
+    # used to print all of them into each tab's PDF.
+    from conftest import make_workbook
+    from openpyxl import load_workbook
+
+    path = make_workbook(tmp_path / "dev.xlsx", "Dev")
+    wb = load_workbook(path)
+    for ws in wb.worksheets:
+        ws.print_area = "A1:B11"
+    wb.save(path)
+
+    out = {CERTIFICATES: tmp_path / "Certificates.pdf", PASS_FAIL: tmp_path / "Pass-Fail.pdf"}
+    engine = LibreOfficeEngine()
+    engine.start()
+    try:
+        build_pdfs([path], default_sheet_names(), out, engine, Recorder())
+    finally:
+        engine.stop()
+    assert [t.split(" Check")[0] for t in page_texts(out[CERTIFICATES])] == ["Dev ECG.certificate",
+                                                                            "Dev NIBP.certificate"]
