@@ -90,9 +90,11 @@ On macOS/Linux the app uses LibreOffice. Linux needs the `python3-tk` package.
 
 **Build the Windows .exe yourself:** on a Windows PC with Python installed, double-click `build_windows.bat`.
 The program appears in `dist\CertificatePDFBuilder.exe`.
-GitHub Actions does the same on every push (`.github/workflows/build.yml`). To publish a new download, raise `__version__`
-in `certpdf/__init__.py` and push a tag such as `v1.0.1`. The workflow then creates a release with `CertificatePDFBuilder.zip`,
-and the Download button always points to the newest one.
+GitHub Actions does the same on every push (`.github/workflows/build.yml`).
+
+**Publish a new download:** raise `__version__` in `certpdf/__init__.py`, then on GitHub go to **Releases → Draft a new release**,
+type a new tag such as `v1.0.1`, and click **Publish release**. A few minutes later the workflow attaches
+`CertificatePDFBuilder.zip` to it, and the Download button at the top always points to the newest release.
 
 **Tests:** `pip install -r requirements-dev.txt` then `python -m pytest`. The end-to-end tests run only when LibreOffice is installed.
 

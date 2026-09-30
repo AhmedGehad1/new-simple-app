@@ -3,12 +3,13 @@ name: Test and build Windows app
 on:
   push:
     branches: ["**"]
-    tags: ["v*"]
   pull_request:
+  release:
+    types: [published]  # publishing a release on GitHub attaches the zip to it
   workflow_dispatch:
 
 permissions:
-  contents: write  # attach the .exe to releases
+  contents: write  # attach the zip to releases
 
 jobs:
   test:
@@ -59,11 +60,12 @@ jobs:
           name: CertificatePDFBuilder-windows
           path: dist/CertificatePDFBuilder/
           if-no-files-found: error
-      - name: Publish the zip as a release
-        if: startsWith(github.ref, 'refs/tags/v')
+      - name: Attach the zip to the release
+        if: github.event_name == 'release'
         uses: softprops/action-gh-release@v2
         with:
           files: dist/CertificatePDFBuilder.zip
+          append_body: true
           body: |
             **Download `CertificatePDFBuilder.zip` below**, extract it, and double-click `CertificatePDFBuilder.exe`.
             Nothing to install. The PC needs Microsoft Excel or the free LibreOffice.
@@ -73,7 +75,7 @@ jobs:
   windows-libreoffice:
     # Slow (installs LibreOffice), so it only runs for releases or when started by hand.
     name: End-to-end test on Windows with LibreOffice
-    if: github.event_name == 'workflow_dispatch' || startsWith(github.ref, 'refs/tags/v')
+    if: github.event_name == 'workflow_dispatch' || github.event_name == 'release'
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
