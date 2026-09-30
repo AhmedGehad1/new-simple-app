@@ -23,7 +23,7 @@ from openpyxl import Workbook
 
 from .config import GROUP_TITLES, GROUPS, SHEET_SPECS, SPEC_BY_KEY
 from .libreoffice import ConversionError, LibreOffice
-from .sheet_copy import load_values, use_default_font
+from .sheet_copy import keep_spaces, load_values, use_default_font
 from .stacked_sheet import Block, read_block, write_blocks
 from .workbook_info import match_sheets
 
@@ -227,6 +227,7 @@ def _save(group: str, sheets: dict[str, list[Block]], default_font, theme, out_p
     partial = out_path.with_name(out_path.name + ".part")
     try:
         book.save(partial)
+        keep_spaces(partial)
         os.replace(partial, out_path)
     except PermissionError:
         _remove_quietly(partial)

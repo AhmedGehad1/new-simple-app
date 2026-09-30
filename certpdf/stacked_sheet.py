@@ -80,7 +80,31 @@ def printed_area(ws) -> tuple[int, int, int, int]:
         if boxes:
             return (min(b[0] for b in boxes), min(b[1] for b in boxes),
                     max(b[2] for b in boxes), max(b[3] for b in boxes))
-    return range_boundaries(ws.calculate_dimension())
+    # No print area: Excel prints from A1 to the last cell that shows something - a value, a border or
+    # a fill. Cells that only have a font set don't count; on a centred page they would move everything.
+    last_col = last_row = 0
+    for cell in list(ws._cells.values()):
+        if cell.value is not None or _shows(cell):
+            last_col, last_row = max(last_col, cell.column), max(last_row, cell.row)
+    for merged in ws.merged_cells.ranges:
+        anchor = ws._cells.get((merged.min_row, merged.min_col))
+        if anchor is not None and (anchor.value is not None or _shows(anchor)):
+            last_col, last_row = max(last_col, merged.max_col), max(last_row, merged.max_row)
+    if not last_col:
+        return range_boundaries(ws.calculate_dimension())
+    return 1, 1, last_col, last_row
+
+
+def _shows(cell) -> bool:
+    """True when an empty cell still prints something: a border or a fill."""
+    if not cell.has_style:
+        return False
+    border = cell.border
+    if any(side is not None and side.style for side in (border.left, border.right, border.top, border.bottom)):
+        return True
+    if border.diagonal is not None and border.diagonal.style and (border.diagonalUp or border.diagonalDown):
+        return True
+    return getattr(cell.fill, "fill_type", "gradient") not in (None, "none")  # a gradient fill has no type
 
 
 def _column_widths(ws, first: int, last: int) -> list[float]:

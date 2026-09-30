@@ -5,6 +5,8 @@ from pathlib import Path
 
 import pytest
 from openpyxl import Workbook, load_workbook
+from openpyxl.cell.rich_text import CellRichText, TextBlock
+from openpyxl.cell.text import InlineFont
 from openpyxl.formatting.rule import FormulaRule, Rule
 from openpyxl.styles import Border, Color, Font, PatternFill, Side
 from openpyxl.styles.differential import DifferentialStyle
@@ -16,7 +18,7 @@ from openpyxl.worksheet.pagebreak import Break
 from certpdf.config import CERTIFICATES, PASS_FAIL, default_sheet_names
 from certpdf.libreoffice import LibreOffice
 from certpdf.excel_output import build_workbooks
-from certpdf.stacked_sheet import DIGIT_PX, read_block, write_blocks
+from certpdf.stacked_sheet import DIGIT_PX, printed_area, read_block, write_blocks
 
 TABS = ["Device data", "ECG.certificate", "NIBP.certificate", "ECG.pass-fail test sheet", "NIBP.pass-fail sheet"]
 FOOTER = "Code No MECL-TR-05"
@@ -201,6 +203,43 @@ def test_no_border_where_the_print_area_cuts_a_merged_box(tmp_path):
     assert out.cell(top + 1, c[1]).border.right.style == "thin"
     assert out.cell(top + 1, a[0]).border.bottom.style == "thin"  # a normal cell keeps its border
     assert out.cell(top + 1, d[1]).border.bottom.style == "thin"
+
+
+def test_without_print_area_cells_with_only_a_font_are_not_printed():
+    # Excel prints up to the last cell with a value, a border or a fill. A cell with only a font set
+    # doesn't count: on a centred page it would move everything.
+    ws = Workbook().active
+    ws["A1"] = "Title"
+    ws["C3"].border = Border(bottom=Side(style="thin"))
+    for row in range(1, 8):
+        ws.cell(row, 5).font = Font(italic=True)
+    ws["B10"].font = Font(bold=True)
+    assert printed_area(ws) == (1, 1, 3, 3)
+    ws["D6"].fill = PatternFill("solid", fgColor="FFFF00")
+    assert printed_area(ws) == (1, 1, 4, 6)
+    ws["A8"] = "Across"
+    ws.merge_cells("A8:F8")
+    assert printed_area(ws) == (1, 1, 6, 8)
+
+
+def test_text_of_only_spaces_is_kept(tmp_path):
+    # Excel drops text that is only spaces unless it is marked to be kept, and openpyxl doesn't
+    # mark it: "Client" + " " + "Name:" would print as "ClientName:".
+    path = make_template(tmp_path / "dev.xlsx", "dev")
+    wb = load_workbook(path)
+    ws = wb["ECG.certificate"]
+    ws["B2"] = CellRichText(["Client", TextBlock(InlineFont(rFont="Arial Narrow", sz=12), " "),
+                             TextBlock(InlineFont(rFont="Arial Narrow", sz=12, i=True), "Name:")])
+    ws["C2"] = " "
+    wb.save(path)
+    _, outputs, _ = build([path], tmp_path)
+    with zipfile.ZipFile(outputs[CERTIFICATES]) as zf:
+        xml = "".join(zf.read(name).decode() for name in zf.namelist()
+                      if name.startswith("xl/worksheets/") or name == "xl/sharedStrings.xml")
+    assert not re.search(r"<t>\s+</t>", xml)
+    assert xml.count('<t xml:space="preserve"> </t>') == 2
+    ws = load_workbook(outputs[CERTIFICATES], rich_text=True)["ECG certificates"]
+    assert [str(c.value) for row in ws.iter_rows() for c in row if c.value is not None][1:3] == ["Client Name:", " "]
 
 
 def test_conditional_formats_point_at_the_moved_cells(tmp_path):
