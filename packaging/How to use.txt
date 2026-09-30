@@ -1,0 +1,19 @@
+Certificate PDF Builder
+=======================
+
+1. Double-click CertificatePDFBuilder.exe (nothing to install).
+   If Windows says "Windows protected your PC", click More info > Run anyway.
+
+2. Click "+ Add files..." (or "Add folder...") and choose the device Excel files.
+   The table shows a tick or a cross for each of the 4 tabs.
+   Use the arrow buttons or "Sort A-Z" to set the order.
+
+3. Choose where to save, then click "Create PDFs". You get two files:
+     Certificates.pdf           - ECG.certificate + NIBP.certificate of every device
+     Pass-Fail Test Sheets.pdf  - ECG.pass-fail + NIBP.pass-fail of every device
+
+Needs Microsoft Excel or the free LibreOffice (https://www.libreoffice.org) on the PC.
+If your tabs have different names, click "Tab names..." to change them.
+Your Excel files are only read, never changed.
+
+Latest version: https://github.com/AhmedGehad1/new-simple-app/releases/latest
