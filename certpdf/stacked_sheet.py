@@ -50,6 +50,7 @@ class Block:
     styles: list[tuple]                      # (font, fill, border, number_format, protection, alignment)
     cells: list[tuple]                       # (row, col, value, style index or None), 0-based in the block
     merges: list[tuple]                      # (row1, col1, row2, col2), 0-based
+    cut_sides: dict                          # (row, col) -> sides where the print area cuts a merged box
     formats: list[tuple]                     # ([(row1, col1, row2, col2)...], rule)
     breaks: list[int]                        # page break after these rows (0-based)
     origin: tuple[int, int]                  # (first row, first column) of the printed area in the tab
@@ -148,11 +149,27 @@ def read_block(ws, label: str) -> Block:
             cells.append((cell.row - first_row, cell.column - first_col, value, ref))
 
     merges = []
+    cut_sides: dict[tuple, frozenset] = {}
     for merged in ws.merged_cells.ranges:
         r1, c1 = max(merged.min_row, first_row), max(merged.min_col, first_col)
         r2, c2 = min(merged.max_row, last_row), min(merged.max_col, last_col)
         if r1 <= r2 and c1 <= c2:
             merges.append((r1 - first_row, c1 - first_col, r2 - first_row, c2 - first_col))
+            # Where the print area cuts through a merged box, the edge is inside the box in the
+            # original, so no border is printed there.
+            for r in range(r1, r2 + 1):
+                for c in range(c1, c2 + 1):
+                    sides = set()
+                    if r == r2 and merged.max_row > r2:
+                        sides.add("bottom")
+                    if r == r1 and merged.min_row < r1:
+                        sides.add("top")
+                    if c == c2 and merged.max_col > c2:
+                        sides.add("right")
+                    if c == c1 and merged.min_col < c1:
+                        sides.add("left")
+                    if sides:
+                        cut_sides[(r - first_row, c - first_col)] = frozenset(sides)
 
     formats = []
     for formatting in ws.conditional_formatting:
@@ -171,7 +188,7 @@ def read_block(ws, label: str) -> Block:
     height_pt = sum(h for i, h in enumerate(heights) if i not in hidden)
     return Block(
         label=label, widths_px=widths, heights=heights, hidden_rows=hidden, styles=styles, cells=cells,
-        merges=merges, formats=formats, breaks=breaks, origin=(first_row, first_col),
+        merges=merges, cut_sides=cut_sides, formats=formats, breaks=breaks, origin=(first_row, first_col),
         scale=_effective_scale(ws, width_pt, height_pt), margins=copy(ws.page_margins),
         orientation=ws.page_setup.orientation, paper=ws.page_setup.paperSize,
         page_setup={attr: getattr(ws.page_setup, attr) for attr in _PAGE_SETUP_ATTRS},
@@ -189,8 +206,9 @@ class _Styles:
     def __init__(self) -> None:
         self._cache: dict[tuple, object] = {}
 
-    def apply(self, cell, block_id: int, block: Block, ref: int, first: bool, last: bool) -> None:
-        key = (block_id, ref, first, last)
+    def apply(self, cell, block_id: int, block: Block, ref: int, first: bool, last: bool,
+              cut: frozenset = frozenset()) -> None:
+        key = (block_id, ref, first, last, cut)
         cached = self._cache.get(key)
         if cached is not None:
             cell._style = copy(cached)
@@ -199,13 +217,17 @@ class _Styles:
         if abs(block.scaled - 1) > 0.02 and font.sz:
             font = copy(font)
             font.sz = round(font.sz * block.scaled * 2) / 2
-        if not (first and last):
+        if not (first and last) or cut:
             # A column split over several grid columns: only its outer edges have left/right borders.
             border = copy(border)
-            if not first:
+            if not first or "left" in cut:
                 border.left = _NO_SIDE
-            if not last:
+            if not last or "right" in cut:
                 border.right = _NO_SIDE
+            if "top" in cut:
+                border.top = _NO_SIDE
+            if "bottom" in cut:
+                border.bottom = _NO_SIDE
         cell.font, cell.fill, cell.border = copy(font), copy(fill), border
         cell.number_format, cell.protection, cell.alignment = number_format, copy(protection), copy(alignment)
         self._cache[key] = copy(cell._style)
@@ -363,7 +385,7 @@ def write_blocks(ws, blocks: list[Block]) -> list[str]:
             for g in range(g1, g2 + 1):
                 cell = ws.cell(row=row_of(r), column=g)
                 if ref is not None:
-                    styles.apply(cell, block_id, block, ref, g == g1, g == g2)
+                    styles.apply(cell, block_id, block, ref, g == g1, g == g2, block.cut_sides.get((r, c), frozenset()))
                 if g == g1 and value is not None and not isinstance(cell, MergedCell):
                     cell.value = value
                     if isinstance(value, str) and value.startswith("="):

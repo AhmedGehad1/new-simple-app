@@ -182,6 +182,27 @@ def test_merged_cells_and_values(tmp_path):
         assert ws.cell(top + 2, block.columns[2][0]).value == 4.5
 
 
+def test_no_border_where_the_print_area_cuts_a_merged_box(tmp_path):
+    # Excel prints nothing at the print area's edge inside a merged box: the edge is inside the box.
+    wb = Workbook()
+    ws = wb.active
+    thin = Side(style="thin")
+    for row in ws["A1:D3"]:
+        for cell in row:
+            cell.border = Border(left=thin, right=thin, top=thin, bottom=thin)
+    ws.merge_cells("B2:C3")
+    ws.print_area = "A1:D2"
+    block = read_block(ws, "cut")
+    out = Workbook().active
+    write_blocks(out, [block])
+    top, (a, b, c, d) = block.first_row, block.columns
+    boxed = out.cell(top + 1, b[0]).border
+    assert boxed.bottom.style is None and boxed.left.style == "thin" and boxed.top.style == "thin"
+    assert out.cell(top + 1, c[1]).border.right.style == "thin"
+    assert out.cell(top + 1, a[0]).border.bottom.style == "thin"  # a normal cell keeps its border
+    assert out.cell(top + 1, d[1]).border.bottom.style == "thin"
+
+
 def test_conditional_formats_point_at_the_moved_cells(tmp_path):
     blocks = two_blocks(tmp_path)
     ws = Workbook().active

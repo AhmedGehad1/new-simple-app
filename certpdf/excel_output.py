@@ -132,7 +132,7 @@ def build_workbooks(
     cancel = cancel or threading.Event()
     wanted = {spec.key: sheet_names.get(spec.key) or spec.default_name for spec in SHEET_SPECS}
     blocks: dict[str, list[Block]] = {spec.key: [] for spec in SHEET_SPECS}
-    default_font = None
+    default_font = theme = None
     results: list[WorkbookResult] = []
     total_steps = len(files) + 1
     sources = _Sources()
@@ -156,6 +156,7 @@ def build_workbooks(
                 continue
             if default_font is None:
                 default_font = copy(source._fonts[0])
+                theme = getattr(source, "loaded_theme", None)  # theme colours and fonts of the templates
 
             result.found = match_sheets(wanted, source.sheetnames)
             for key, actual in result.found.items():
@@ -194,7 +195,7 @@ def build_workbooks(
         written: dict[str, OutputResult | None] = {}
         for group, out_path in outputs.items():
             sheets = {key: blocks[key] for key in GROUPS[group] if blocks[key]}
-            written[group] = _save(group, sheets, default_font, Path(out_path), reporter)
+            written[group] = _save(group, sheets, default_font, theme, Path(out_path), reporter)
     finally:
         sources.close()
 
@@ -202,7 +203,7 @@ def build_workbooks(
     return BuildResult(results, written)
 
 
-def _save(group: str, sheets: dict[str, list[Block]], default_font, out_path: Path,
+def _save(group: str, sheets: dict[str, list[Block]], default_font, theme, out_path: Path,
           reporter: Reporter) -> OutputResult | None:
     title = GROUP_TITLES[group]
     if not sheets:
@@ -212,6 +213,8 @@ def _save(group: str, sheets: dict[str, list[Block]], default_font, out_path: Pa
     book.remove(book.active)
     if default_font is not None:
         use_default_font(book, default_font)  # column widths are measured in this font
+    if theme:
+        book.loaded_theme = theme
     for key, blocks in sheets.items():
         sheet = book.create_sheet(SHEET_TITLES[key])
         try:
